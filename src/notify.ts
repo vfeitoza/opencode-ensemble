@@ -2,6 +2,7 @@ import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import { sendMessage } from "./messaging"
 import { log } from "./log"
+import { queueTeamWake } from "./notifications"
 
 type TeamEventType = "spawn" | "message" | "completed" | "error" | "shutdown"
 
@@ -125,13 +126,7 @@ export function notifyLead(
   // Fire-and-forget wake — the system prompt transform delivers the actual
   // content on the lead's next turn. Synthetic: renders as a persistent
   // system entry, not a fake user turn.
-  client.session.promptAsync({
-    sessionID: teamStatus.lead_session_id,
-    parts: [{ type: "text", text: "[System: New team message from system]" }],
-    synthetic: true,
-  }).catch((err) => {
-    log(`notifyLead:wake:failed team=${teamId} err=${err instanceof Error ? err.message : String(err)}`)
-  })
+  queueTeamWake(client, db, { teamId, messageId: id, sessionId: teamStatus.lead_session_id, text: "[System: New team message from system]" })
 
   return id
 }

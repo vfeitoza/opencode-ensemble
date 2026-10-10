@@ -249,6 +249,11 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+V2 lead notifications carry deterministic inbox IDs and Ensemble ownership
+metadata. Their delivery records survive team deletion so archive/purge can
+reconcile a host response that arrives late. The message body is still stored
+in the shared task/message database before the asynchronous wake is sent.
+
 Requested worktree isolation fails closed: if creation or branch establishment
 fails, the teammate does not start in the shared tree. Use `worktree: false`
 explicitly to share a directory. Read-only agents omit worktrees by default,

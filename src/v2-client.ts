@@ -147,7 +147,13 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         // Synthetic (system) messages render as persistent transcript entries
         // instead of fake user turns — the native form for agent notifications.
         if (options.synthetic) {
-          return ctx.session.synthetic({ sessionID: options.sessionID, text: joinParts(options.parts), delivery: "queue" })
+          return ctx.session.synthetic({
+            sessionID: options.sessionID, text: joinParts(options.parts), delivery: "queue",
+            ...(options.notification ? {
+              id: options.notification.inboxId,
+              metadata: { ensemble: { teamId: options.notification.teamId, messageId: options.notification.messageId, notificationId: options.notification.inboxId } },
+            } : {}),
+          })
         }
         if (options.agent) {
           await ctx.session.switchAgent({ sessionID: options.sessionID, agent: options.agent })

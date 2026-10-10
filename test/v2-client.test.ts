@@ -142,6 +142,12 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     })
   })
 
+  test("owned synthetic wake preserves deterministic ID and ownership metadata", async () => {
+    const { calls, ctx } = mockCtx()
+    await createV2Client(ctx).session.promptAsync({ sessionID: "ses-child", parts: [{ type: "text", text: "wake" }], synthetic: true, notification: { teamId: "team1", messageId: "message1", inboxId: "msg_owned" } })
+    expect(calls[0]?.input).toMatchObject({ id: "msg_owned", metadata: { ensemble: { teamId: "team1", messageId: "message1", notificationId: "msg_owned" } } })
+  })
+
   test("session.promptAsync maps to queue-delivery prompt", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never)

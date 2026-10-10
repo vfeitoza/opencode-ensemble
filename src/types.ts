@@ -54,6 +54,8 @@ export interface PluginClient {
       system?: string
       /** V2: deliver as a synthetic (system) message instead of a user prompt. */
       synthetic?: boolean
+      /** Owned V2 inbox notification identity; V1 transport strips this extension. */
+      notification?: { teamId: string; messageId: string; inboxId: string }
     }): Promise<unknown>
     abort(options: { sessionID: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
