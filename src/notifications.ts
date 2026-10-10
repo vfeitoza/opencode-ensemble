@@ -39,7 +39,9 @@ export function closeTeamNotifications(db: Database, teamId: string): void {
 
 /** Cancel only notifications proven to belong to the specified Ensemble team. */
 export async function cancelTeamNotifications(client: PluginClient, db: Database, teamId: string): Promise<{ cancelled: number; ambiguous: number }> {
-  const records = db.query("SELECT id,session_id FROM team_notification WHERE team_id=? AND state='cancel_requested'").all(teamId) as Array<{ id: string; session_id: string }>
+  // Recheck even previously absent/cancelled IDs in a closed scope: an old host
+  // admission can arrive after process reload, without its original callback.
+  const records = db.query("SELECT id,session_id FROM team_notification WHERE team_id=?").all(teamId) as Array<{ id: string; session_id: string }>
   if (!records.length) return { cancelled: 0, ambiguous: 0 }
   if (!client.session.inbox) throw new Error(`Inbox cancellation unavailable for team ${teamId}; purge blocked`)
   let cancelled = 0
