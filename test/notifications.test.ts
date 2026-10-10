@@ -1,8 +1,21 @@
 import { describe, expect, test } from "bun:test"
 import { setupDeps, insertTeam } from "./helpers"
-import { queueTeamWake, closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../src/notifications"
+import { queueTeamWake, closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications, reconcileNotifications } from "../src/notifications"
 
 describe("owned team notifications", () => {
+  test("reload reconciliation rechecks a previously absent ID that the host admits late", async () => {
+    const deps = setupDeps()
+    insertTeam(deps.db, "team1", "team", "lead")
+    deps.client.session.promptAsync = () => new Promise(() => {})
+    queueTeamWake(deps.client, deps.db, { teamId: "team1", messageId: "message1", sessionId: "lead", text: "wake" })
+    const row = deps.db.query("SELECT id FROM team_notification").get() as { id: string }
+    closeTeamNotifications(deps.db, "team1")
+    await cancelTeamNotifications(deps.client, deps.db, "team1")
+    const queued = [{ id: row.id, type: "synthetic" }]
+    deps.client.session.inbox = { list: async () => ({ data: [...queued] }), cancel: async () => { queued.length = 0 } }
+    await reconcileNotifications(deps.client, deps.db)
+    expect(queued).toEqual([])
+  })
   test("legacy V1 notification delivery does not create queued-inbox cancellation requirements", async () => {
     const deps = setupDeps()
     deps.client.session.notificationMode = "legacy"
