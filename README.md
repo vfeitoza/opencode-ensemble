@@ -249,6 +249,11 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+Task batches validate dependencies and insert under one immediate SQLite writer
+transaction. Dependencies must already exist in the current team before the
+call. A failed insert or writer-lock failure does not leave half of a batch;
+retry only after investigating the returned error.
+
 The terminal sidebar distinguishes loading, no-team, and reconnecting/error
 states. It synchronizes a missing session cache before selecting RPC location
 and discards late responses from previous sessions. Open tasks are limited to

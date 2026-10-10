@@ -115,3 +115,17 @@ export function getDb(): Database {
   if (!instance) throw new Error("Database not initialized. Call createDb() first.")
   return instance
 }
+
+/** Run a synchronous all-or-nothing writer transaction, obtaining the lock before validation. */
+export function withImmediateTransaction<T>(db: Database, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const result = operation()
+    if (result && typeof result === "object" && "then" in result) throw new Error("Immediate transactions cannot await asynchronous operations")
+    db.exec("COMMIT")
+    return result
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+}
