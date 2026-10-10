@@ -20,6 +20,8 @@ export interface ToolDeps {
   config: Required<EnsembleConfig>
   /** Stall/activity tracker — shared with the Watchdog. */
   progressTracker: ProgressTracker
+  /** Optional storage/backend port for final committed-work preservation. */
+  preserveMember?: (teamId: string, memberName: string, allowDirty?: boolean) => Promise<string | null>
 }
 
 /** A single permission rule for session-level enforcement. */

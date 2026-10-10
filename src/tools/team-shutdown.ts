@@ -5,6 +5,7 @@ import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./mer
 import type { PreserveBranchFn } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
+import { preserveMemberHead } from "../member-preservation"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
@@ -55,18 +56,10 @@ export async function executeTeamShutdown(
   // Busy + not force → graceful: preserve branch first, then send shutdown message
   // Branch must be preserved NOW — if the session crashes during shutdown_requested,
   // the worktree and branch could be lost before force-abort ever runs.
-  if (member.worktree_branch) {
-    const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
-    const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, args.member)
-    const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
-    if (ok) {
-      deps.db.run(
-        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-        [safeBranch, teamInfo.teamId, args.member],
-      )
-      log(`shutdown:branch:preserved-graceful src=${member.worktree_branch} target=${safeBranch}`)
-    }
-  }
+  await preserveMemberHead(deps.db, teamInfo.teamId, args.member, deps.directory, {
+    allowDirty: true,
+    ...(preserve !== preserveBranch ? { preserve } : {}),
+  })
 
   try {
     deps.client.session.promptAsync({
@@ -102,20 +95,9 @@ async function preserveAndAbort(
   preserve: PreserveBranchFn,
 ): Promise<void> {
   // Preserve the branch BEFORE aborting — session.abort() may delete the worktree + branch
-  if (worktreeBranch && !worktreeBranch.startsWith("ensemble/preserved/")) {
-    const resource = getTeamResourceParts(deps.db, teamId)
-    const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, memberName)
-    const ok = await preserve(worktreeBranch, safeBranch, deps.directory)
-    if (ok) {
-      deps.db.run(
-        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-        [safeBranch, teamId, memberName],
-      )
-      log(`shutdown:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
-    } else {
-      log(`shutdown:branch:preserve-failed src=${worktreeBranch} target=${safeBranch}`)
-    }
-  }
+  await preserveMemberHead(deps.db, teamId, memberName, deps.directory, {
+    ...(preserve !== preserveBranch ? { preserve } : {}),
+  })
 
   // Now safe to abort — the branch is preserved
   try {

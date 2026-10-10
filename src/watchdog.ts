@@ -8,8 +8,11 @@ import { hasReportedCompletion } from "./messaging"
 import { getMemberModel } from "./member-model"
 import { notifyLead } from "./notify"
 import { log } from "./log"
+import { preserveMemberHead } from "./member-preservation"
 
 interface WatchdogOpts {
+  /** Preservation backend for non-local resource stores. */
+  preserveMember?: (teamId: string, name: string) => Promise<string | null>
   db: Database
   client: PluginClient
   registry: MemberRegistry
@@ -38,6 +41,7 @@ interface WatchdogOpts {
  * Transitions them to error/timed_out, aborts their session, and fires a toast.
  */
 export class Watchdog {
+  private readonly preserveMember?: WatchdogOpts["preserveMember"]
   private readonly db: Database
   private readonly client: PluginClient
   private readonly registry: MemberRegistry
@@ -53,6 +57,7 @@ export class Watchdog {
   private timer: ReturnType<typeof setInterval> | undefined
 
   constructor(opts: WatchdogOpts) {
+    this.preserveMember = opts.preserveMember
     this.db = opts.db
     this.client = opts.client
     this.registry = opts.registry
@@ -84,12 +89,13 @@ export class Watchdog {
 
     for (const m of stale) {
       try {
+        await (this.preserveMember ? this.preserveMember(m.team_id, m.name) : preserveMemberHead(this.db, m.team_id, m.name, this.cwd ?? m.worktree_dir))
         if (m.workspace_id) {
           await this.client.workspace.remove({ id: m.workspace_id })
         }
         await this.client.worktree.remove({ worktreeRemoveInput: { directory: m.worktree_dir } })
         this.db.run(
-          "UPDATE team_member SET worktree_dir = NULL, worktree_branch = NULL, workspace_id = NULL WHERE team_id = ? AND name = ?",
+          "UPDATE team_member SET worktree_dir = NULL, workspace_id = NULL WHERE team_id = ? AND name = ?",
           [m.team_id, m.name]
         )
       } catch { /* best effort */ }
@@ -256,14 +262,11 @@ export class Watchdog {
 
     for (const member of stale) {
       // Preserve branch BEFORE abort — session.abort() may destroy the worktree + branch
-      if (this.cwd && member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-        const safeBranch = preservedBranchName(member.project_name, member.team_name, member.team_id, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, this.cwd)
-        if (ok) {
-          this.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, member.team_id, member.name])
-          log(`watchdog:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
-        }
+      try {
+        await (this.preserveMember ? this.preserveMember(member.team_id, member.name) : preserveMemberHead(this.db, member.team_id, member.name, this.cwd ?? "."))
+      } catch (error) {
+        notifyLead(this.client, this.db, member.team_id, `Timeout abort blocked for ${member.name}: committed work could not be preserved. ${error instanceof Error ? error.message : String(error)}`)
+        continue
       }
 
       // Mark as timed out

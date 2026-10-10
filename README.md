@@ -249,6 +249,14 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+Requested worktree isolation fails closed: if creation or branch establishment
+fails, the teammate does not start in the shared tree. Use `worktree: false`
+explicitly to share a directory. Read-only agents omit worktrees by default,
+but an explicit `worktree: true` is honored. Sessions are bound to the verified
+directory even if the legacy workspace bridge is unavailable. Shutdown and
+cleanup refresh preservation from the current HEAD; failure or uncommitted
+work blocks destructive removal.
+
 V2 worktree operations use the host project's ID, not Ensemble's directory-keyed
 project row. Newly created detached Git worktrees receive a verified named
 branch before the adapter reports success. Branch establishment failures retain

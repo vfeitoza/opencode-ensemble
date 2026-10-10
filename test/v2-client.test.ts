@@ -278,6 +278,14 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect(calls[0]?.input).toMatchObject({ location: { directory: "/wt/ensemble-x" } })
   })
 
+  test("directory binding mismatch rejects before any prompt is sent", async () => {
+    const { calls, ctx } = mockCtx()
+    await expect(createV2Client(ctx).session.create({ directory: "/verified-worker", title: "worker" })).rejects.toThrow("not bound")
+    expect(calls.some(c => c.method === "prompt")).toBe(false)
+    ctx.session.get = async input => ({ id: input.sessionID, location: { directory: "/verified-worker" } })
+    expect((await createV2Client(ctx).session.create({ directory: "/verified-worker", title: "worker" })).data?.id).toBe("ses_new123")
+  })
+
   test("workspace.create bridges branch to directory (no workspace domain on V2 ctx)", async () => {
     const { ctx } = mockCtx()
     const client = createV2Client(ctx as never, {

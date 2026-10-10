@@ -1,5 +1,5 @@
 import type { ToolDeps, PermissionRule } from "../types"
-import { validateMemberName } from "../util"
+import { validateMemberName, generateId } from "../util"
 import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
 import { notifyLead } from "../notify"
@@ -8,6 +8,7 @@ import { parseModelId } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
+import { preserveMemberWork } from "../member-preservation"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -40,10 +41,6 @@ function getSpawnTimeout(): number {
 }
 
 /** Returns true if the directory is already inside an OpenCode worktree. */
-function isWorktreeDirectory(dir: string): boolean {
-  return dir.includes("/opencode/worktree/")
-}
-
 /** Race a promise against a timeout. Throws if the timeout fires first. Cleans up timer on resolution. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
@@ -88,7 +85,7 @@ export async function executeTeamSpawn(
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
   const isReadOnly = agent === "plan" || agent === "explore"
-  const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
+  const useWorktree = args.worktree ?? !isReadOnly
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${agent} worktree=${useWorktree}`)
@@ -96,6 +93,11 @@ export async function executeTeamSpawn(
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
+  const spawnResourceId = generateId("spawn")
+  if (useWorktree) deps.db.run(
+    "INSERT INTO team_spawn_resource(id,team_id,member_name,state,time_created,time_updated) VALUES (?,?,?,'creating',?,?)",
+    [spawnResourceId, teamInfo.teamId, args.name, Date.now(), Date.now()],
+  )
 
   if (useWorktree) {
     const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
@@ -103,24 +105,25 @@ export async function executeTeamSpawn(
     try {
       log(`spawn:worktree:start name=${args.name}`)
       const result = await withTimeout(
-        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }),
+        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }).then(result => {
+          if (result.data) deps.db.run(
+            "UPDATE team_spawn_resource SET worktree_dir=?,worktree_branch=?,state=CASE WHEN state='timed_out' THEN state ELSE 'worktree_ready' END,time_updated=? WHERE id=?",
+            [result.data.directory, result.data.branch, Date.now(), spawnResourceId],
+          )
+          return result
+        }),
         getSpawnTimeout(), `worktree.create for "${args.name}"`
       )
       if (result.data) {
         worktreeDir = result.data.directory
         worktreeBranch = result.data.branch
       }
+      if (!worktreeDir || !worktreeBranch) throw new Error("Host did not return a verified worktree directory and branch")
       log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
     } catch (err) {
+      deps.db.run("UPDATE team_spawn_resource SET state=?,time_updated=? WHERE id=?", [String(err).includes("timed out") ? "timed_out" : "failed", Date.now(), spawnResourceId])
       log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
-      try {
-        await deps.client.tui.showToast({
-          title: "Team",
-          message: `Worktree creation failed for ${args.name}, using shared directory`,
-          variant: "warning",
-          duration: 4000,
-        })
-      } catch { /* TUI may not be available */ }
+      throw new Error(`Worktree creation failed for ${args.name}; no shared-directory fallback: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -201,12 +204,20 @@ export async function executeTeamSpawn(
         title: `${args.name} (@${agent} teammate)`,
         permission,
         ...(workspaceId ? { workspaceID: workspaceId } : {}),
+        ...(worktreeDir ? { directory: worktreeDir } : {}),
+      }).then(result => {
+        if (useWorktree && result.data) deps.db.run(
+          "UPDATE team_spawn_resource SET session_id=?,state=CASE WHEN state='timed_out' THEN state ELSE 'session_ready' END,time_updated=? WHERE id=?",
+          [result.data.id, Date.now(), spawnResourceId],
+        )
+        return result
       }),
       getSpawnTimeout(), `session.create for "${args.name}"`
     )
     childSessionId = createResult.data?.id
     log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
+    if (useWorktree) deps.db.run("UPDATE team_spawn_resource SET state=?,time_updated=? WHERE id=?", [String(err).includes("timed out") ? "timed_out" : "failed", Date.now(), spawnResourceId])
     log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
     // Track failure for circuit breaker
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -216,18 +227,14 @@ export async function executeTeamSpawn(
     if (workspaceId) {
       try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
     }
-    if (worktreeDir) {
-      try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
-    }
+    // OQ-202: retain owned worktree and any late session instead of deleting
+    // resources a timed-out host operation may still be using.
     throw new Error(`Failed to create session for teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
   }
 
   if (!childSessionId) {
     if (workspaceId) {
       try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
-    }
-    if (worktreeDir) {
-      try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
     }
     throw new Error("Failed to create teammate session")
   }
@@ -254,6 +261,7 @@ export async function executeTeamSpawn(
 
   // Register in memory
   deps.registry.register(teamInfo.teamId, args.name, childSessionId)
+  if (useWorktree) deps.db.run("UPDATE team_spawn_resource SET state='registered',time_updated=? WHERE id=?", [Date.now(), spawnResourceId])
 
   // Auto-claim a task for this teammate when claim_task is provided (issue #27).
   // Claims atomically so a task is never double-assigned when the lead hands out
@@ -408,10 +416,11 @@ export async function executeTeamSpawn(
     parts: [{ type: "text", text: contextStr }],
     agent,
     ...(modelParam ? { model: modelParam } : {}),
-  }).catch((err) => {
+  }).catch(async (err) => {
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`spawn:promptAsync:failed name=${args.name} err=${errMsg} — rolling back`)
     try {
+      await preserveMemberWork(deps, teamInfo.teamId, args.name)
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
       // Release any task auto-claimed for this teammate so it returns to the pool.
@@ -447,9 +456,7 @@ export async function executeTeamSpawn(
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
   // Isolation is a claim the lead relies on, so say plainly when it did not
   // happen. The toast alone left "spawned" as the only signal (issue #40).
-  const isolationInfo = useWorktree && !worktreeBranch
-    ? ` (WARNING: worktree creation failed — ${args.name} shares your working directory, so edits can collide)`
-    : ""
+  const isolationInfo = !useWorktree ? " (shared directory — no individual worktree)" : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
   const claimInfo = claimedTaskContent
     ? ` (claimed task: ${args.claim_task})`

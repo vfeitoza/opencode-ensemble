@@ -73,20 +73,19 @@ describe("branch preservation", () => {
     expect(after.status).toBe("shutdown")
   })
 
-  test("shutdown still completes if preserve fails", async () => {
+  test("shutdown refuses to abort if preserve fails", async () => {
     await executeTeamCreate(deps, { name: "fail-preserve" }, lead)
     await executeTeamSpawn(deps, { name: "bob", agent: "build", prompt: "task" }, lead)
 
     const failPreserve: PreserveBranchFn = async () => false
 
-    // Should not throw — preserve failure is logged but shutdown continues
-    const result = await executeTeamShutdown(deps, { member: "bob" }, lead, undefined, failPreserve)
-    expect(result).toContain("shut down")
+    await expect(executeTeamShutdown(deps, { member: "bob" }, lead, undefined, failPreserve)).rejects.toThrow("abort/remove blocked")
+    expect(deps.client.calls.filter(c => c.method === "session.abort")).toHaveLength(0)
 
     // Member is shutdown but branch was NOT updated (preserve failed)
     const after = deps.db.query("SELECT status FROM team_member WHERE name = 'bob'")
       .get() as { status: string }
-    expect(after.status).toBe("shutdown")
+    expect(after.status).toBe("busy")
   })
 
   test("shutdown without worktree branch skips preservation", async () => {

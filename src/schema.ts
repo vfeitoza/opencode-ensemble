@@ -203,7 +203,20 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_member ADD COLUMN retry_until INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
-   ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+    ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+  // OQ-202: retain ownership of resources whose host response arrives after a
+  // spawn timeout; team purge must not silently erase reconciliation evidence.
+  `CREATE TABLE team_spawn_resource (
+     id TEXT PRIMARY KEY,
+     team_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     worktree_dir TEXT,
+     worktree_branch TEXT,
+     session_id TEXT,
+     state TEXT NOT NULL CHECK(state IN ('creating','worktree_ready','session_ready','registered','failed','timed_out')),
+     time_created INTEGER NOT NULL,
+     time_updated INTEGER NOT NULL
+   );`,
 ]
 
 /**

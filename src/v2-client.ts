@@ -113,6 +113,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           }
         }
         const created = await ctx.session.create(input)
+        if (options.directory) {
+          const session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          if (session.location?.directory !== options.directory) {
+            throw new Error(`Session ${created.id} was not bound to ${options.directory}; refusing to start teammate`)
+          }
+        }
         if (permissions) {
           // Session.create permissions lose to agent rules (last match wins
           // and agent rules apply later), which strips team tools from
@@ -158,7 +164,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const text = joinParts(options.parts)
         return ctx.session.prompt({ sessionID: options.sessionID, text, delivery: "queue" })
       },
-      abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID }),
+      abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID, resume: false }),
       status: async () => {
         const active = await ctx.session.active()
         const data: Record<string, { type: string }> = {}

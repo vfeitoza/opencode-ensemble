@@ -6,6 +6,7 @@ import { getTeamResourceParts, mergeBranch, deleteBranch, preserveBranch, preser
 import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 import { runCommand } from "../process"
+import { preserveMemberWork } from "../member-preservation"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -486,16 +487,7 @@ export async function executeTeamCleanup(
   if (args.force) {
     for (const member of active) {
       // Preserve branch before abort — session.abort() may destroy the worktree + branch
-      if (member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-        const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
-        const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, deps.directory)
-        if (ok) {
-          deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, teamInfo.teamId, member.name])
-          member.worktree_branch = safeBranch
-        }
-      }
+      member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
       try {
         await deps.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
@@ -503,6 +495,11 @@ export async function executeTeamCleanup(
   }
 
   // Safety net: merge any remaining unmerged preserved branches
+  for (const member of members) {
+    if (member.worktree_dir || member.worktree_branch) {
+      member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
+    }
+  }
   const unmerged = members.filter(m => m.worktree_branch !== null)
   const merged: string[] = []
   const conflicted: string[] = []

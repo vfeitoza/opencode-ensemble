@@ -103,7 +103,7 @@ export async function executeTeamStatus(
       }
       if (m.worktree_dir) {
         lines.push(`    worktree: ${m.worktree_dir}`)
-      }
+      } else lines.push("    isolation: shared directory")
     }
   }
 

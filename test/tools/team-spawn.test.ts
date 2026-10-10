@@ -417,13 +417,13 @@ describe("team_spawn", () => {
     expect(result).toContain("spawned")
   })
 
-  test("skips worktree creation when already inside a worktree", async () => {
+  test("creates individual worktree even when lead is inside another worktree", async () => {
     deps.directory = "/home/user/.local/share/opencode/worktree/abc123/some-worktree"
     const result = await executeTeamSpawn(deps, {
       name: "alice", agent: "build", prompt: "Fix tests",
     }, "lead-sess")
     const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
-    expect(wtCalls).toHaveLength(0)
+    expect(wtCalls).toHaveLength(1)
     expect(result).toContain("alice")
     expect(result).toContain("spawned")
   })
@@ -489,27 +489,29 @@ describe("team_spawn", () => {
     expect(result).not.toContain("branch:")
   })
 
-  test("falls back to shared directory if worktree creation fails", async () => {
+  test("fails closed instead of starting a shared worker when worktree creation fails", async () => {
     deps.client.worktree.create = async () => { throw new Error("worktree failed") }
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")
+    }, "lead-sess")).rejects.toThrow("worktree failed")
+    expect(deps.db.query("SELECT name FROM team_member WHERE name='alice'").get()).toBeNull()
+    expect(deps.client.calls.filter(c => c.method === "session.create")).toHaveLength(0)
+  })
 
-    // Should still succeed — just without worktree
-    expect(result).toContain("alice")
-    expect(result).toContain("spawned")
+  test("honors explicit isolated read-only spawn and binds directory without a workspace", async () => {
+    deps.client.workspace.create = async () => { throw new Error("no bridge") }
+    await executeTeamSpawn(deps, { name: "scout", agent: "explore", prompt: "read", worktree: true }, "lead-sess")
+    expect(deps.client.calls.filter(c => c.method === "worktree.create")).toHaveLength(1)
+    const create = deps.client.calls.find(c => c.method === "session.create")
+    expect((create?.args[0] as { directory?: string }).directory).toContain("worktree-")
+  })
 
-    // DB should have null worktree columns
-    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
-    expect(row.worktree_dir).toBeNull()
-    expect(row.worktree_branch).toBeNull()
-
-    // Toast warning should have been fired
-    const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
-    expect(toasts.length).toBeGreaterThan(0)
+  test("explicit shared worker response states it is sharing the directory", async () => {
+    const result = await executeTeamSpawn(deps, { name: "shared", agent: "build", prompt: "work", worktree: false }, "lead-sess")
+    expect(result).toContain("shared directory")
   })
 
   // issue #40 Bug 2: worktree.create failing was downgraded to a TUI toast, so the
@@ -517,17 +519,10 @@ describe("team_spawn", () => {
   test("reports in the tool result when worktree creation failed (issue #40)", async () => {
     deps.client.worktree.create = async () => { throw new Error("no worktree strategy configured") }
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "alice", agent: "build", prompt: "Fix the tests",
-    }, "lead-sess")
-
-    expect(result).toContain("worktree")
-    expect(result).toMatch(/failed|shared/i)
-
-    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?")
-      .get("alice") as Record<string, string | null>
-    expect(row.worktree_dir).toBeNull()
-    expect(row.worktree_branch).toBeNull()
+    }, "lead-sess")).rejects.toThrow("Worktree creation failed")
+    expect(deps.db.query("SELECT name FROM team_member WHERE name='alice'").get()).toBeNull()
   })
 
   test("says the teammate is isolated only when a worktree really exists (issue #40)", async () => {
@@ -537,10 +532,9 @@ describe("team_spawn", () => {
     expect(ok).toContain("branch:")
 
     deps.client.worktree.create = async () => { throw new Error("nope") }
-    const degraded = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "bob", agent: "build", prompt: "Fix the tests",
-    }, "lead-sess")
-    expect(degraded).not.toContain("branch:")
+    }, "lead-sess")).rejects.toThrow("Worktree creation failed")
   })
 
   test("rolls back member asynchronously if promptAsync fails (fire-and-forget)", async () => {
@@ -663,7 +657,7 @@ describe("team_spawn", () => {
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const createArgs = createCall!.args[0] as { workspaceID?: string; directory?: string }
     expect(createArgs.workspaceID).toBeTruthy()
-    expect(createArgs.directory).toBeUndefined()
+    expect(createArgs.directory).toContain("/tmp/worktree-")
   })
 
   test("stores workspace_id in DB", async () => {
@@ -1017,6 +1011,19 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     else { delete process.env.SPAWN_TIMEOUT_MS }
   })
 
+  test("late worktree response is retained with team ownership instead of shared spawn", async () => {
+    process.env.SPAWN_TIMEOUT_MS = "20"
+    let finish: (result: { data: { name: string; branch: string; directory: string } }) => void = () => undefined
+    deps.client.worktree.create = () => new Promise(resolve => { finish = resolve })
+    await expect(executeTeamSpawn(deps, { name: "late", prompt: "work" }, "lead-sess")).rejects.toThrow("timed out")
+    finish({ data: { name: "late", branch: "ensemble-late", directory: "/owned-late" } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(deps.db.query("SELECT team_id,member_name,state,worktree_dir FROM team_spawn_resource WHERE member_name='late'").get()).toMatchObject({
+      team_id: "t1", member_name: "late", state: "timed_out", worktree_dir: "/owned-late",
+    })
+    expect(deps.client.calls.filter(c => c.method === "session.create")).toHaveLength(0)
+  })
+
   test("throws timeout error if session.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
     // Mock session.create to never resolve (simulates git lock contention)
     deps.client.session.create = () => new Promise(() => { /* never resolves */ })
@@ -1028,20 +1035,16 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     }, "lead-sess")).rejects.toThrow(/timed out/i)
   }, 10000)
 
-  test("falls back to shared directory if worktree.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
+  test("fails closed if worktree.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
     // Mock worktree.create to never resolve
     deps.client.worktree.create = () => new Promise(() => { /* never resolves */ })
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "bob",
       agent: "build",
       prompt: "Fix tests",
       worktree: true,
-    }, "lead-sess")
-
-    // Should succeed with fallback — no worktree branch in output
-    expect(result).toContain("bob")
-    expect(result).toContain("spawned")
-    expect(result).not.toContain("branch:")
+    }, "lead-sess")).rejects.toThrow("timed out")
+    expect(deps.db.query("SELECT name FROM team_member WHERE name='bob'").get()).toBeNull()
   }, 10000)
 })

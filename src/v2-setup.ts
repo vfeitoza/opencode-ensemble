@@ -22,6 +22,7 @@ import { startDashboard, type DashboardServer } from "./dashboard"
 import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
+import { preserveMemberHead } from "./member-preservation"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -154,7 +155,19 @@ export async function setupEnsemble(
   const controller = new AbortController()
 
   const dispatch = async (event: V2EventLike): Promise<void> => {
+    const sessionID = event.data?.sessionID
+    const entry = sessionID ? registry.getBySession(sessionID) : undefined
+    if (entry) {
+      const member = db.query("SELECT status FROM team_member WHERE team_id=? AND name=?").get(entry.teamId, entry.memberName) as { status: string } | null
+      if (member?.status === "shutdown_requested" && ["session.status", "session.idle", "session.execution.succeeded", "session.execution.failed", "session.execution.started"].includes(event.type)) {
+        await preserveMemberHead(db, entry.teamId, entry.memberName, ctx.location.directory)
+      }
+    }
     const transition = dispatchV2Event(db, registry, tracker, event)
+    if (transition?.to === "busy_while_shutdown" && sessionID) {
+      await ctx.session.interrupt({ sessionID, resume: false })
+      return
+    }
     // Idle-without-report nudge (parity with V1): a member that went idle
     // without ever messaging the lead gets ONE reminder to report via
     // team_message. Without this, weak models finish silently and the lead

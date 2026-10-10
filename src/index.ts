@@ -38,6 +38,7 @@ import { executeTeamView } from "./tools/team-view"
 import type { ToolDeps, } from "./types"
 import { TokenBucket } from "./rate-limit"
 import { Watchdog } from "./watchdog"
+import { preserveMemberWork } from "./member-preservation"
 
 const DEFAULT_RATE_LIMIT_REFILL = 2
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 1000
@@ -167,6 +168,11 @@ const plugin: Plugin = async (input) => {
       if (event.type === "session.status") {
         const { sessionID, status } = event.properties
         const statusType = status.type as "idle" | "busy" | "retry"
+        const shutdownEntry = registry.getBySession(sessionID)
+        if (shutdownEntry) {
+          const current = db.query("SELECT status FROM team_member WHERE team_id=? AND name=?").get(shutdownEntry.teamId, shutdownEntry.memberName) as { status: string } | null
+          if (current?.status === "shutdown_requested" && statusType !== "retry") await preserveMemberWork(deps, shutdownEntry.teamId, shutdownEntry.memberName)
+        }
         const retryPayload = statusType === "retry"
           ? (status as { attempt: number; message: string; action?: { reason: string; provider: string; title: string; message: string; label: string; link?: string }; next: number })
           : undefined
@@ -251,17 +257,7 @@ const plugin: Plugin = async (input) => {
             const member = deps.db.query(
               "SELECT worktree_branch, name, team_id FROM team_member WHERE session_id = ?"
             ).get(sessionID) as { worktree_branch: string | null; name: string; team_id: string } | null
-            if (member?.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-              const { getTeamResourceParts, preserveBranch: preserve, preservedBranchName: branchName } = await import("./tools/merge-helper")
-              const resource = getTeamResourceParts(deps.db, member.team_id)
-              const safeBranch = branchName(resource.projectName, resource.teamName, resource.teamId, member.name)
-              const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
-              if (ok) {
-                deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-                  [safeBranch, member.team_id, member.name])
-                log(`busy_while_shutdown:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
-              }
-            }
+            if (member) await preserveMemberWork(deps, member.team_id, member.name)
             try {
               await client.session.abort({ sessionID })
             } catch { /* best effort */ }
