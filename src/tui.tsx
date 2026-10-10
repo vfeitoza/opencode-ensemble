@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import "@opentui/solid"
-import { createSignal, createEffect, onCleanup, onMount, Show } from "solid-js"
+import { createSignal, createEffect, on, onCleanup, onMount, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { EnsembleRpc } from "./rpc"
 import { fetchTeamContext, type TeamContextData } from "./tui-context"
@@ -10,11 +10,19 @@ import { createSidebarLoader, type SidebarLoadState } from "./tui-sidebar-state"
 /** Sidebar widget: team members with status plus task counts. */
 function TeamSidebar(props: { sessionID?: string; fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
   const [loadState, setLoadState] = createSignal<SidebarLoadState>({ status: "loading" })
-  const state = () => { const current = loadState(); return current.status === "ready" ? current.data : current.status === "error" ? current.lastData : null }
-  const loader = createSidebarLoader(() => props.fetchContext(), setLoadState)
+  const [state, setState] = createSignal<TeamContextData | null>(null)
+  const loader = createSidebarLoader(() => props.fetchContext(), value => {
+    setLoadState(value)
+    if (value.status === "ready") setState(value.data)
+    else if (value.status === "loading") setState(null)
+    else setState(value.lastData ?? null)
+  })
   const load = () => loader.load(props.sessionID)
-  createEffect(() => { void loader.load(props.sessionID) })
+  // Track only the selected session. Reactive reads made while fetching/cache
+  // syncing must not recursively restart the request before it can settle.
+  createEffect(on(() => props.sessionID, () => { void load() }))
   onMount(() => {
+    void load()
     onCleanup(loader.dispose)
     const off = props.onEvent(() => void load())
     onCleanup(off)
@@ -26,8 +34,7 @@ function TeamSidebar(props: { sessionID?: string; fetchContext: () => Promise<Te
   return (
     <box flexDirection="column">
     <Show when={loadState().status === "error"}><text>Ensemble: erro de consulta — reconectando{state()?.team ? " (dados desatualizados)" : ""}</text></Show>
-    <Show when={loadState().status !== "loading"} fallback={<text>Ensemble: carregando…</text>}>
-    <Show when={state()?.team} fallback={loadState().status === "ready" ? <text>Ensemble: no active team</text> : null}>
+    <Show when={state()?.team} fallback={<text>{loadState().status === "loading" ? "Ensemble: carregando…" : loadState().status === "ready" ? "Ensemble: no active team" : "Ensemble: consulta indisponível"}</text>}>
       <box flexDirection="column">
         <text>Ensemble: {state()?.team}</text>
         {(state()?.members ?? []).map((member) => (
@@ -39,7 +46,7 @@ function TeamSidebar(props: { sessionID?: string; fetchContext: () => Promise<Te
           <text>Tarefas abertas:</text>
           {buildSidebarTasks(state()?.openTasks ?? [], state()?.openTaskTotal ?? state()?.tasks.pending ?? 0).rows.map((lines) => (
             <box flexDirection="column">
-              {lines.map((line) => <text>{line}</text>)}
+              {lines.map((line) => <text wrapMode="none" truncate={true}>{line}</text>)}
             </box>
           ))}
           <Show when={buildSidebarTasks(state()?.openTasks ?? [], state()?.openTaskTotal ?? state()?.tasks.pending ?? 0).hidden > 0}>
@@ -50,7 +57,6 @@ function TeamSidebar(props: { sessionID?: string; fetchContext: () => Promise<Te
           tasks: {(state()?.tasks.pending ?? 0)} open / {(state()?.tasks.done ?? 0)} done
         </text>
       </box>
-    </Show>
     </Show>
     </box>
   )

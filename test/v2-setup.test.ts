@@ -62,6 +62,19 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("preservation failure during shutdown does not terminate dispatch or mark shutdown safe", async () => {
+    const { ctx } = mockSetupCtx()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("UPDATE team_member SET status='shutdown_requested',worktree_branch='missing-owned-ref' WHERE name='alice'")
+      await expect(handle.dispatch({ type: "session.idle", data: { sessionID: "ses_alice" } })).resolves.toBeUndefined()
+      expect(handle.db.query("SELECT status FROM team_member WHERE name='alice'").get()).toMatchObject({ status: "shutdown_requested" })
+      handle.db.run("UPDATE team_member SET status='busy',worktree_branch=NULL WHERE name='alice'")
+      await handle.dispatch({ type: "session.idle", data: { sessionID: "ses_alice" } })
+      expect(handle.db.query("SELECT status FROM team_member WHERE name='alice'").get()).toMatchObject({ status: "ready" })
+    } finally { await handle.dispose(); handle.db.close() }
+  })
   test("teamContext includes only this team's open tasks with assignment and state", async () => {
     const { ctx } = mockSetupCtx()
     let handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>> = {}

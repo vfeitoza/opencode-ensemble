@@ -162,7 +162,14 @@ export async function setupEnsemble(
     if (entry) {
       const member = db.query("SELECT status FROM team_member WHERE team_id=? AND name=?").get(entry.teamId, entry.memberName) as { status: string } | null
       if (member?.status === "shutdown_requested" && ["session.status", "session.idle", "session.execution.succeeded", "session.execution.failed", "session.execution.started"].includes(event.type)) {
-        await preserveMemberHead(db, entry.teamId, entry.memberName, ctx.location.directory)
+        try {
+          await preserveMemberHead(db, entry.teamId, entry.memberName, ctx.location.directory)
+        } catch (error) {
+          // Keep shutdown_requested and the event stream alive. Do not interrupt
+          // a dirty/unpreserved member merely to satisfy a status transition.
+          vlog(`event:preservation-blocked member=${entry.memberName} err=${String(error)}`)
+          return
+        }
       }
     }
     const transition = dispatchV2Event(db, registry, tracker, event)

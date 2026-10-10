@@ -23,10 +23,10 @@ describe("V2 worktree branch establishment", () => {
   test("creates a real named branch from detached HEAD and verifies repeated lookup", async () => {
     const { root, directory } = await fixture()
     try {
-      expect(await ensureWorktreeBranch(directory, "ensemble-test")).toBe("ensemble-test")
-      expect(await git(directory, "symbolic-ref", "--short", "HEAD")).toBe("ensemble-test")
-      expect(await git(root, "rev-parse", "refs/heads/ensemble-test")).toBe(await git(directory, "rev-parse", "HEAD"))
-      expect(await ensureWorktreeBranch(directory, "ensemble-test")).toBe("ensemble-test")
+      expect(await ensureWorktreeBranch(directory, "ensemble-test#team-worker")).toBe("ensemble-test#team-worker")
+      expect(await git(directory, "symbolic-ref", "--short", "HEAD")).toBe("ensemble-test#team-worker")
+      expect(await git(root, "rev-parse", "refs/heads/ensemble-test#team-worker")).toBe(await git(directory, "rev-parse", "HEAD"))
+      expect(await ensureWorktreeBranch(directory, "ensemble-test#team-worker")).toBe("ensemble-test#team-worker")
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

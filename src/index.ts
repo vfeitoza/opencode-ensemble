@@ -171,7 +171,12 @@ const plugin: Plugin = async (input) => {
         const shutdownEntry = registry.getBySession(sessionID)
         if (shutdownEntry) {
           const current = db.query("SELECT status FROM team_member WHERE team_id=? AND name=?").get(shutdownEntry.teamId, shutdownEntry.memberName) as { status: string } | null
-          if (current?.status === "shutdown_requested" && statusType !== "retry") await preserveMemberWork(deps, shutdownEntry.teamId, shutdownEntry.memberName)
+          if (current?.status === "shutdown_requested" && statusType !== "retry") {
+            try { await preserveMemberWork(deps, shutdownEntry.teamId, shutdownEntry.memberName) } catch (error) {
+              log(`event:preservation-blocked member=${shutdownEntry.memberName} err=${String(error)}`)
+              return
+            }
+          }
         }
         const retryPayload = statusType === "retry"
           ? (status as { attempt: number; message: string; action?: { reason: string; provider: string; title: string; message: string; label: string; link?: string }; next: number })

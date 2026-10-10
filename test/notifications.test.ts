@@ -3,6 +3,16 @@ import { setupDeps, insertTeam } from "./helpers"
 import { queueTeamWake, closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../src/notifications"
 
 describe("owned team notifications", () => {
+  test("legacy V1 notification delivery does not create queued-inbox cancellation requirements", async () => {
+    const deps = setupDeps()
+    deps.client.session.notificationMode = "legacy"
+    deps.client.session.inbox = undefined
+    insertTeam(deps.db, "team1", "team", "lead")
+    queueTeamWake(deps.client, deps.db, { teamId: "team1", messageId: "message1", sessionId: "lead", text: "hello" })
+    closeTeamNotifications(deps.db, "team1")
+    expect(await cancelTeamNotifications(deps.client, deps.db, "team1")).toEqual({ cancelled: 0, ambiguous: 0 })
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync")).toHaveLength(1)
+  })
   test("legacy text is reported as ambiguous, never cancelled as ownership proof", async () => {
     const deps = setupDeps()
     insertTeam(deps.db, "team1", "team", "lead")

@@ -12,9 +12,9 @@ test("CLI inbox bridge blocks a different server before any cancellation", async
 test("CLI bridge re-verifies host identity before listing and cancelling", async () => {
   let identify: () => Promise<unknown> = async () => ({})
   const calls: string[] = []
-  const bridge = await createVerifiedInboxBridge({ register: async (_definition, handlers) => { identify = handlers.identity!; return { dispose: async () => undefined } } }, "/project", async args => {
+  const bridge = await createVerifiedInboxBridge({ register: async (_definition, handlers) => { identify = handlers.identity!; return { dispose: async () => undefined } } }, "/project with spaces=a&b", async args => {
     calls.push(args[0]!)
-    if (args[0] === "rpc.call") return { output: await identify() }
+    if (args[0] === "rpc.call") { expect(args).toContain("location[directory]=/project with spaces=a&b"); return { output: await identify() } }
     if (args[0] === "session.inbox.list") return { data: [] }
     return undefined
   })

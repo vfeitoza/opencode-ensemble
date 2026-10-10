@@ -114,6 +114,9 @@ function deleteArchivedTeams(deps: ToolDeps, targets: PurgeTarget[]): void {
   })
   transaction(targets)
   targets.forEach(team => {
+    // Only successfully registered spawns are terminal here. Retain timeout
+    // ownership evidence until its late resource has actually been reconciled.
+    deps.db.run("DELETE FROM team_spawn_resource WHERE team_id=? AND state='registered'", [team.id])
     deps.registry.unregisterTeam(team.id)
     spawnFailures.delete(team.id)
   })
@@ -570,6 +573,7 @@ export async function executeTeamCleanup(
   // Clean up in-memory state
   deps.registry.unregisterTeam(teamInfo.teamId)
   spawnFailures.delete(teamInfo.teamId)
+  deps.db.run("DELETE FROM team_spawn_resource WHERE team_id=? AND state='registered'", [teamInfo.teamId])
 
   // Build response
   const parts: string[] = [`Team "${teamInfo.teamName}" cleaned up.`]

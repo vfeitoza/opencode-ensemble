@@ -38,6 +38,8 @@ export interface PermissionRule {
  */
 export interface PluginClient {
   session: {
+    /** V1 has no persistent synthetic inbox; preserve its original notification behavior. */
+    notificationMode?: "legacy" | "queued"
     /** Optional V2 host inbox capability; never implemented with unauthenticated guessed URLs. */
     inbox?: {
       list(options: { sessionID: string }): Promise<{ data?: Array<{ id: string; type: string; metadata?: Record<string, unknown>; payload?: { text?: string } }> }>

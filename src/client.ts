@@ -36,6 +36,7 @@ export function wrapThrowingClient(raw: unknown): PluginClient {
   const r = raw as RawClient
   return {
     session: {
+      notificationMode: "legacy",
       create: throwing(r.session.create.bind(r.session)),
       promptAsync: throwing(async (...args: unknown[]) => {
         const options = args[0] as Record<string, unknown>

@@ -125,7 +125,7 @@ export function withImmediateTransaction<T>(db: Database, operation: () => T): T
     db.exec("COMMIT")
     return result
   } catch (error) {
-    db.exec("ROLLBACK")
+    try { db.exec("ROLLBACK") } catch { /* preserve the original SQL failure if SQLite already rolled back */ }
     throw error
   }
 }

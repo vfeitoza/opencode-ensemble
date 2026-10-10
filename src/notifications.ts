@@ -7,6 +7,10 @@ import { log } from "./log"
 export function queueTeamWake(client: PluginClient, db: Database, input: { teamId: string; messageId: string; sessionId: string; text: string }): void {
   const team = db.query("SELECT status FROM team WHERE id=?").get(input.teamId) as { status: string } | null
   if (team?.status !== "active" || db.query("SELECT team_id FROM team_notification_scope WHERE team_id=?").get(input.teamId)) return
+  if (client.session.notificationMode === "legacy") {
+    client.session.promptAsync({ sessionID: input.sessionId, parts: [{ type: "text", text: input.text }], synthetic: true }).catch(error => log(`notification:legacy-failed err=${String(error)}`))
+    return
+  }
   const previous = db.query("SELECT id,state FROM team_notification WHERE team_id=? AND message_id=? AND session_id=?").get(input.teamId, input.messageId, input.sessionId) as { id: string; state: string } | null
   if (previous && previous.state !== "failed") return
   const id = previous?.id ?? `msg_${randomUUID().replaceAll("-", "")}`
@@ -69,8 +73,13 @@ export async function countAmbiguousNotifications(client: PluginClient, db: Data
   if (!client.session.inbox) return 0
   const team = db.query("SELECT lead_session_id FROM team WHERE id=?").get(teamId) as { lead_session_id: string } | null
   if (!team) return 0
-  const items = (await client.session.inbox.list({ sessionID: team.lead_session_id })).data ?? []
-  return items.filter(item => item.type === "synthetic" && item.payload?.text?.startsWith("[System: New team message from ") && !db.query("SELECT id FROM team_notification WHERE id=? AND team_id=?").get(item.id, teamId)).length
+  const members = db.query("SELECT session_id FROM team_member WHERE team_id=?").all(teamId) as Array<{ session_id: string }>
+  let ambiguous = 0
+  for (const sessionID of new Set([team.lead_session_id, ...members.map(member => member.session_id)])) {
+    const items = (await client.session.inbox.list({ sessionID })).data ?? []
+    ambiguous += items.filter(item => item.type === "synthetic" && item.payload?.text?.startsWith("[System: New team message from ") && !db.query("SELECT id FROM team_notification WHERE id=? AND team_id=?").get(item.id, teamId)).length
+  }
+  return ambiguous
 }
 
 /** Retry durable cancellation records on reload, without issuing new reminders. */
