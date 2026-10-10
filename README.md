@@ -249,6 +249,13 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+V2 worktree operations use the host project's ID, not Ensemble's directory-keyed
+project row. Newly created detached Git worktrees receive a verified named
+branch before the adapter reports success. Branch establishment failures retain
+the returned directory for investigation instead of guessing a branch name or
+deleting potentially unidentified work. The canonical checkout is excluded
+from worktree cleanup inventory.
+
 Configure the checkout as a local plugin in your project's `opencode.json` or `.opencode/opencode.json`:
 
 ```jsonc

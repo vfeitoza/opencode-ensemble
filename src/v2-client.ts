@@ -1,5 +1,5 @@
 import type { PluginClient } from "./types"
-import { runCommand } from "./process"
+import { ensureWorktreeBranch } from "./v2-worktree"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
@@ -17,8 +17,8 @@ export interface V2Context {
   worktree: {
     create(input: Record<string, unknown>): Promise<{ directory: string }>
     remove(input: Record<string, unknown>): Promise<unknown>
-    list(): Promise<Array<{ directory: string }>>
-    refresh(): Promise<unknown>
+    list(input: Record<string, unknown>): Promise<Array<{ directory: string; type?: string }>>
+    refresh(input: Record<string, unknown>): Promise<unknown>
   }
   // OQ-V2-rules: host 2.0.4 removes permission.rules; the adapter
   // feature-detects it at runtime, so the type is optional here.
@@ -32,23 +32,16 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps {
-  /** Current branch checked out in a directory, or null when unknown. */
-  gitBranch?: (directory: string) => Promise<string | null>
+  /** Host project ID, distinct from the directory-keyed Ensemble project row. */
+  projectID?: string
+  /** Canonical checkout to exclude from host worktree inventory. */
+  projectDirectory?: string
+  /** Establish a real branch in the checkout returned by the host. */
+  ensureBranch?: typeof ensureWorktreeBranch
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
   rpcEmitter?: { events: { emit(name: string, data: unknown): Promise<unknown> } }
-}
-
-/** Current branch in a directory via git. */
-async function gitBranchDefault(directory: string): Promise<string | null> {
-  try {
-    const result = await runCommand(["git", "branch", "--show-current"], { cwd: directory })
-    const branch = result.stdout.trim()
-    return result.exitCode === 0 && branch ? branch : null
-  } catch {
-    return null
-  }
 }
 
 /** Concatenate the text parts of a promptAsync payload into one string. */
@@ -75,8 +68,8 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   states here, extend the mapping.
  * - tui.*: no-op. Toasts and session-select move to the CLI (`./tui`) plugin
  *   in a later phase — the server plugin must not depend on a TUI.
- * - worktree.create: V2 reports only the directory, so the branch is read
- *   back via git (falls back to the requested name). OQ-V2-branch.
+ * - worktree.create: the host project ID scopes every worktree operation;
+ *   a detached checkout gets a verified named branch before it is returned.
  * - worktree.list: V2 entries carry directory only; name is the basename
  *   (recovery filters on the `ensemble-` prefix — a non-matching dir is
  *   skipped, never wrongly deleted). reset has no production callers and
@@ -89,7 +82,11 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   column stays the source of truth and is still nulled by cleanup.
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
-  const gitBranch = deps.gitBranch ?? gitBranchDefault
+  const establishBranch = deps.ensureBranch ?? ensureWorktreeBranch
+  const projectID = (): string => {
+    if (!deps.projectID) throw new Error("V2 worktree operations require the host projectID")
+    return deps.projectID
+  }
   return {
     session: {
       create: async (options) => {
@@ -194,25 +191,31 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
     worktree: {
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
-        const created = await ctx.worktree.create({ name })
-        const branch = (await gitBranch(created.directory)) ?? name
-        return { data: { name, branch, directory: created.directory } }
+        const created = await ctx.worktree.create({ projectID: projectID(), name })
+        try {
+          const branch = await establishBranch(created.directory, name)
+          return { data: { name, branch, directory: created.directory } }
+        } catch (error) {
+          // OQ-202: retain the returned checkout for reconciliation rather than
+          // deleting a directory/ref whose ownership or dirty state is unknown.
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Worktree retained at ${created.directory}; no shared-directory fallback is safe.`)
+        }
       },
       remove: async (options) => {
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
-        return ctx.worktree.remove({ directory, force: false })
+        return ctx.worktree.remove({ projectID: projectID(), directory, force: false })
       },
       list: async () => {
-        const entries = await ctx.worktree.list()
+        const entries = await ctx.worktree.list({ projectID: projectID() })
         return {
-          data: entries.map((entry) => ({
+          data: entries.filter(entry => entry.type !== "root" && entry.directory !== deps.projectDirectory).map((entry) => ({
             name: entry.directory.split("/").pop() ?? entry.directory,
             branch: "",
             directory: entry.directory,
           })),
         }
       },
-      reset: async () => ctx.worktree.refresh(),
+      reset: async () => ctx.worktree.refresh({ projectID: projectID() }),
     },
     workspace: {
       create: async (options) => {

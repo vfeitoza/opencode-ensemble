@@ -25,7 +25,7 @@ import { vlog } from "./log"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
-  location: { directory: string }
+  location: { directory: string; project?: { id: string; directory: string; canonical: string } }
   options: Record<string, unknown>
   session: V2Context["session"] & {
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
@@ -330,7 +330,11 @@ export async function setupEnsemble(
   // API gains session scope — team tools and prompts carry identity instead.
   await ctx.shell.hook("create.before", () => undefined)
 
-  const client = createV2Client(ctx, rpc ? { rpcEmitter: rpc } : {})
+  const client = createV2Client(ctx, {
+    projectID: ctx.location.project?.id,
+    projectDirectory: ctx.location.project?.canonical,
+    ...(rpc ? { rpcEmitter: rpc } : {}),
+  })
   const deps: ToolDeps = {
     db,
     registry,

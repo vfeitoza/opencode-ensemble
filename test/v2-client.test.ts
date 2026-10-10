@@ -61,22 +61,17 @@ function mockCtx() {
         calls.push({ domain: "worktree", method: "remove", input })
         return undefined
       },
-      list: async () => {
-        calls.push({ domain: "worktree", method: "list", input: {} })
+      list: async (input: Record<string, unknown> = {}) => {
+        calls.push({ domain: "worktree", method: "list", input })
         return [{ directory: "/wt/ensemble-proj-team-alice" }, { directory: "/wt/other" }]
       },
-      refresh: async () => {
-        calls.push({ domain: "worktree", method: "refresh", input: {} })
+      refresh: async (input: Record<string, unknown> = {}) => {
+        calls.push({ domain: "worktree", method: "refresh", input })
         return undefined
       },
     },
   }
   return { calls, ctx }
-}
-
-/** Fake git branch lookup: dir → branch. */
-function mockGit(map: Record<string, string | null>) {
-  return async (directory: string) => map[directory] ?? null
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
@@ -229,10 +224,11 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
   test("worktree.create discovers the branch via git (V2 reports directory only)", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never, {
-      gitBranch: mockGit({ "/wt/ensemble-proj-team-alice": "ensemble-proj-team-alice" }),
+      projectID: "host-project",
+      ensureBranch: async (_directory: string, name: string) => name,
     })
     const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-proj-team-alice" } })
-    expect(calls[0]?.input).toMatchObject({ name: "ensemble-proj-team-alice" })
+    expect(calls[0]?.input).toEqual({ projectID: "host-project", name: "ensemble-proj-team-alice" })
     expect(result.data).toMatchObject({
       name: "ensemble-proj-team-alice",
       branch: "ensemble-proj-team-alice",
@@ -240,22 +236,39 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     })
   })
 
-  test("worktree.create falls back to the requested name when git lookup fails", async () => {
+  test("worktree.create rejects failed branch establishment instead of inventing a ref", async () => {
     const { ctx } = mockCtx()
-    const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    expect(result.data?.branch).toBe("ensemble-x")
+    const client = createV2Client(ctx as never, { projectID: "host-project", ensureBranch: async () => { throw new Error("Git branch unavailable") } })
+    await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("Git branch unavailable")
+  })
+
+  test("missing host project ID rejects before creating any worktree", async () => {
+    const { calls, ctx } = mockCtx()
+    const client = createV2Client(ctx as never)
+    await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("projectID")
+    expect(calls).toHaveLength(0)
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {
     const { calls, ctx } = mockCtx()
-    const client = createV2Client(ctx as never)
+    const client = createV2Client(ctx as never, { projectID: "host-project" })
     await client.worktree.remove({ worktreeRemoveInput: { directory: "/wt/ensemble-x" } })
-    expect(calls[0]?.input).toMatchObject({ directory: "/wt/ensemble-x", force: false })
+    expect(calls[0]?.input).toEqual({ projectID: "host-project", directory: "/wt/ensemble-x", force: false })
     const list = await client.worktree.list()
     expect(list.data?.[0]).toMatchObject({ directory: "/wt/ensemble-proj-team-alice" })
     await client.worktree.reset({ worktreeResetInput: { directory: "/wt/ensemble-x" } })
-    expect(calls[calls.length - 1]).toMatchObject({ domain: "worktree", method: "refresh" })
+    expect(calls.find(c => c.method === "list")?.input).toEqual({ projectID: "host-project" })
+    expect(calls[calls.length - 1]).toMatchObject({ domain: "worktree", method: "refresh", input: { projectID: "host-project" } })
+  })
+
+  test("worktree.list excludes the host's root checkout from cleanup candidates", async () => {
+    const { ctx } = mockCtx()
+    ctx.worktree.list = async () => [
+      { directory: "/wt/ensemble-lead-root" },
+      { directory: "/wt/ensemble-worker", type: "worktree" },
+    ]
+    const result = await createV2Client(ctx, { projectID: "host-project", projectDirectory: "/wt/ensemble-lead-root" }).worktree.list()
+    expect(result.data?.map(tree => tree.directory)).toEqual(["/wt/ensemble-worker"])
   })
 
   test("session.create routes a v2dir workspace id to location.directory", async () => {
