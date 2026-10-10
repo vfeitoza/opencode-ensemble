@@ -249,6 +249,12 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+The terminal sidebar distinguishes loading, no-team, and reconnecting/error
+states. It synchronizes a missing session cache before selecting RPC location
+and discards late responses from previous sessions. Open tasks are limited to
+five rows and 120 Unicode codepoints per description, with an overflow count;
+full descriptions and boards remain available through tools and the dashboard.
+
 V2 lead notifications carry deterministic inbox IDs and Ensemble ownership
 metadata. Their delivery records survive team deletion so archive/purge can
 reconcile a host response that arrives late. The message body is still stored

@@ -14,6 +14,18 @@ function source(directory?: string) {
 }
 
 describe("TUI location-scoped team context", () => {
+  test("cold cache synchronizes displayed session before using companion location", async () => {
+    let cached = false
+    const context = source("/wrong-companion")
+    const synced = { ...context, data: { ...context.data, session: { get: () => cached ? { location: { directory: "/actual-session" } } : undefined, sync: async () => { cached = true } } } } as unknown as Parameters<typeof fetchTeamContext>[0]
+    expect(await fetchTeamContext(synced, { teamContext: async (_input, options) => { expect(options?.location).toEqual({ directory: "/actual-session" }); return team } }, "ses-cold")).toEqual(team)
+  })
+
+  test("session synchronization failure cannot be concealed by a default project", async () => {
+    const context = source("/fallback")
+    const synced = { ...context, data: { ...context.data, session: { get: () => undefined, sync: async () => { throw new Error("sync unavailable") } } } }
+    await expect(fetchTeamContext(synced, { teamContext: async () => { throw new Error("RPC must not run") } }, "ses-cold")).rejects.toThrow("sync unavailable")
+  })
   test("routes the request to the displayed session's location before the companion location", async () => {
     const context = source("/other-project")
     const sessionLocation = { directory: "/session-project", workspaceID: "ws-test" }

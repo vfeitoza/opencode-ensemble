@@ -17,12 +17,13 @@ export interface TeamContextData {
   tasks: { pending: number; done: number }
   /** Optional for compatibility with servers exposing the earlier RPC contract. */
   openTasks?: SidebarTask[]
+  openTaskTotal?: number
 }
 
 type Context = Plugin.Context
 type ContextSource = Pick<Context, "location"> & {
   data: {
-    session: Pick<Context["data"]["session"], "get">
+    session: Pick<Context["data"]["session"], "get"> & Partial<Pick<Context["data"]["session"], "sync">>
     location: Pick<Context["data"]["location"], "default">
   }
 }
@@ -34,6 +35,7 @@ export async function fetchTeamContext(
   sessionID?: string,
 ): Promise<TeamContextData | null> {
   if (!sessionID) return null
+  if (!context.data.session.get(sessionID) && context.data.session.sync) await context.data.session.sync(sessionID)
   const location = context.data.session.get(sessionID)?.location
     ?? context.location
     ?? context.data.location.default()

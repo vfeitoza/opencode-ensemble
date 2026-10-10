@@ -233,10 +233,12 @@ export async function setupEnsemble(
             teamInfo.teamId,
           ) as { c: number }
         ).c
+        const requested = (input as { openTaskLimit?: number }).openTaskLimit ?? 5
+        const limit = Math.max(1, Math.min(5, Math.floor(requested)))
         const openTasks = db.query(
-          "SELECT id, content, status, assignee FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked') ORDER BY time_created ASC, id ASC",
-        ).all(teamInfo.teamId)
-        return { team: teamInfo.teamName, members, tasks: { pending, done }, openTasks }
+          "SELECT id, content, status, assignee FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked') ORDER BY time_created ASC, id ASC LIMIT ?",
+        ).all(teamInfo.teamId, limit)
+        return { team: teamInfo.teamName, members, tasks: { pending, done }, openTasks, openTaskTotal: pending }
       },
     })
   } catch (err) {

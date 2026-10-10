@@ -1,23 +1,21 @@
 /** @jsxImportSource @opentui/solid */
 import "@opentui/solid"
-import { createSignal, onCleanup, onMount, Show } from "solid-js"
+import { createSignal, createEffect, onCleanup, onMount, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { EnsembleRpc } from "./rpc"
 import { fetchTeamContext, type TeamContextData } from "./tui-context"
-import { formatSidebarTask } from "./tui-view"
+import { buildSidebarTasks } from "./tui-view"
+import { createSidebarLoader, type SidebarLoadState } from "./tui-sidebar-state"
 
 /** Sidebar widget: team members with status plus task counts. */
-function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
-  const [state, setState] = createSignal<TeamContextData | null>(null)
-  const load = async (): Promise<void> => {
-    try {
-      setState(await props.fetchContext())
-    } catch {
-      // Server unreachable — keep the last known state.
-    }
-  }
+function TeamSidebar(props: { sessionID?: string; fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
+  const [loadState, setLoadState] = createSignal<SidebarLoadState>({ status: "loading" })
+  const state = () => { const current = loadState(); return current.status === "ready" ? current.data : current.status === "error" ? current.lastData : null }
+  const loader = createSidebarLoader(() => props.fetchContext(), setLoadState)
+  const load = () => loader.load(props.sessionID)
+  createEffect(() => { void loader.load(props.sessionID) })
   onMount(() => {
-    void load()
+    onCleanup(loader.dispose)
     const off = props.onEvent(() => void load())
     onCleanup(off)
     // Heartbeat: events alone go stale (cleanup emits nothing, events can be
@@ -26,7 +24,10 @@ function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null
     onCleanup(() => clearInterval(tick))
   })
   return (
-    <Show when={state()?.team} fallback={<text>Ensemble: no active team</text>}>
+    <box flexDirection="column">
+    <Show when={loadState().status === "error"}><text>Ensemble: erro de consulta — reconectando{state()?.team ? " (dados desatualizados)" : ""}</text></Show>
+    <Show when={loadState().status !== "loading"} fallback={<text>Ensemble: carregando…</text>}>
+    <Show when={state()?.team} fallback={loadState().status === "ready" ? <text>Ensemble: no active team</text> : null}>
       <box flexDirection="column">
         <text>Ensemble: {state()?.team}</text>
         {(state()?.members ?? []).map((member) => (
@@ -36,17 +37,22 @@ function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null
         ))}
         <Show when={(state()?.openTasks?.length ?? 0) > 0}>
           <text>Tarefas abertas:</text>
-          {(state()?.openTasks ?? []).map((task) => (
+          {buildSidebarTasks(state()?.openTasks ?? [], state()?.openTaskTotal ?? state()?.tasks.pending ?? 0).rows.map((lines) => (
             <box flexDirection="column">
-              {formatSidebarTask(task).map((line) => <text>{line}</text>)}
+              {lines.map((line) => <text>{line}</text>)}
             </box>
           ))}
+          <Show when={buildSidebarTasks(state()?.openTasks ?? [], state()?.openTaskTotal ?? state()?.tasks.pending ?? 0).hidden > 0}>
+            <text>+{buildSidebarTasks(state()?.openTasks ?? [], state()?.openTaskTotal ?? state()?.tasks.pending ?? 0).hidden} tarefas abertas</text>
+          </Show>
         </Show>
         <text>
           tasks: {(state()?.tasks.pending ?? 0)} open / {(state()?.tasks.done ?? 0)} done
         </text>
       </box>
     </Show>
+    </Show>
+    </box>
   )
 }
 
@@ -87,6 +93,7 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (panel: { sessionID?: string }) => (
         <TeamSidebar
+          sessionID={panel.sessionID}
           fetchContext={() => fetchTeamContext(context, rpc, panel.sessionID)}
           onEvent={onEvent}
         />

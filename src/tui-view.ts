@@ -1,10 +1,20 @@
 import type { SidebarTask } from "./tui-context"
 
+/** Bound sidebar task density independently of full task storage. */
+export function buildSidebarTasks(tasks: SidebarTask[], totalOpen: number): { rows: string[][]; hidden: number } {
+  const visible = tasks.slice(0, 5)
+  return { rows: visible.map(formatSidebarTask), hidden: Math.max(0, totalOpen - visible.length) }
+}
+
 /** Format an open task's state, description, and assignment for the sidebar. */
 export function formatSidebarTask(task: SidebarTask): string[] {
+  const clean = task.content.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()
+  const points = Array.from(clean)
+  const content = points.length > 120 ? `${points.slice(0, 119).join("")}…` : clean
+  const owner = (task.assignee ?? "não atribuído").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
   return [
-    `□ [${task.status}] ${task.content}`,
-    `  responsável: ${task.assignee ?? "não atribuído"}`,
+    `□ [${task.status}] ${content}`,
+    `  responsável: ${owner}`,
   ]
 }
 

@@ -1,11 +1,22 @@
 import { describe, expect, test } from "bun:test"
-import { summarizeMembers, formatSidebarTask, type SidebarMember } from "../src/tui-view"
+import { summarizeMembers, formatSidebarTask, buildSidebarTasks, type SidebarMember } from "../src/tui-view"
 
 function member(name: string, status: string): SidebarMember {
   return { name, status }
 }
 
 describe("tui-view helpers (issue #36)", () => {
+  test("large task boards are bounded and descriptions strip controls without splitting Unicode", () => {
+    const tasks = Array.from({ length: 100 }, (_, id) => ({ id: String(id), content: `\u001b[31m${"😀".repeat(150)}\nnext`, status: "pending" as const, assignee: null }))
+    const view = buildSidebarTasks(tasks, 100)
+    expect(view.rows).toHaveLength(5)
+    expect(view.hidden).toBe(95)
+    const description = view.rows[0]![0]!.replace("□ [pending] ", "")
+    expect(Array.from(description)).toHaveLength(120)
+    expect(description).not.toContain("\u001b")
+    expect(description.endsWith("…")).toBe(true)
+    expect(tasks[0]?.content).toContain("\u001b")
+  })
   test("open task shows pending description and unassigned owner", () => {
     expect(formatSidebarTask({ id: "task1", content: "Criar src/greeting.ts", status: "pending", assignee: null })).toEqual([
       "□ [pending] Criar src/greeting.ts", "  responsável: não atribuído",
