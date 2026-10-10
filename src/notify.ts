@@ -1,7 +1,6 @@
 import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import { sendMessage } from "./messaging"
-import { log } from "./log"
 import { queueTeamWake } from "./notifications"
 
 type TeamEventType = "spawn" | "message" | "completed" | "error" | "shutdown"

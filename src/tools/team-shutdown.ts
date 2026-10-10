@@ -1,7 +1,7 @@
 import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty, countBranchCommits } from "./shared"
 import type { IsDirtyFn, CommitCountFn } from "./shared"
-import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
+import { preserveBranch } from "./merge-helper"
 import type { PreserveBranchFn } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
@@ -91,7 +91,7 @@ async function preserveAndAbort(
   teamId: string,
   memberName: string,
   sessionId: string,
-  worktreeBranch: string | null,
+  _worktreeBranch: string | null,
   preserve: PreserveBranchFn,
 ): Promise<void> {
   // Preserve the branch BEFORE aborting — session.abort() may delete the worktree + branch

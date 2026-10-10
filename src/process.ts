@@ -12,6 +12,7 @@ export interface CommandOptions {
   cwd?: string
   /** Bound only this owned subprocess; never signals another process or service. */
   timeoutMs?: number
+  env?: Record<string, string | undefined>
 }
 
 function collect(stream: Readable | null, chunks: Buffer[]): void {
@@ -39,6 +40,7 @@ export function runCommand(args: string[], options: CommandOptions = {}): Promis
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
+      ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
     })
 
     collect(child.stdout, stdout)

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { runCommand } from "./process"
 import type { PluginClient } from "./types"
+import { Service } from "@opencode/client/service"
 
 interface RpcPort {
   register(definition: unknown, handlers: Record<string, () => Promise<unknown>>): Promise<{ dispose?(): Promise<void> }>
@@ -11,7 +12,14 @@ export async function createVerifiedInboxBridge(
   rpc: RpcPort,
   directory: string,
   invoke: (args: string[]) => Promise<unknown> = async args => {
-    const result = await runCommand(["opencode", "api", ...args], { cwd: directory, timeoutMs: 10_000 })
+    // Discovery is read-only: never call ensure/start when establishing this
+    // optional bridge, since that could launch an unrelated shared service.
+    const endpoint = await Service.discover()
+    if (!endpoint) throw new Error("No existing managed service discovered; native inbox or explicit host bridge required")
+    const result = await runCommand(["opencode", "api", "--server", endpoint.url, ...args], {
+      cwd: directory, timeoutMs: 10_000,
+      env: { OPENCODE_PASSWORD: endpoint.auth?.password },
+    })
     if (result.exitCode !== 0) throw new Error(`OpenCode inbox API failed: ${result.stderr.trim() || result.stdout.trim()}`)
     return result.stdout.trim() ? JSON.parse(result.stdout) as unknown : undefined
   },

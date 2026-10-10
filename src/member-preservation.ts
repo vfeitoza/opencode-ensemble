@@ -29,11 +29,12 @@ export async function preserveMemberHead(
   if (member.worktree_dir) {
     try { await access(member.worktree_dir); directoryExists = true } catch { /* a removed checkout may still have its owned ref */ }
   }
-  if (directoryExists && !options.allowDirty && await git(member.worktree_dir!, ["status", "--porcelain"])) {
+  const checkout = directoryExists ? member.worktree_dir : null
+  if (checkout && !options.allowDirty && await git(checkout, ["status", "--porcelain"])) {
     throw new Error(`Member ${memberName} has uncommitted work at ${member.worktree_dir}; abort/remove blocked`)
   }
-  const source = directoryExists
-    ? await git(member.worktree_dir!, ["rev-parse", "--verify", "HEAD^{commit}"])
+  const source = checkout
+    ? await git(checkout, ["rev-parse", "--verify", "HEAD^{commit}"])
     : member.worktree_branch ? await git(cwd, ["rev-parse", "--verify", `${member.worktree_branch}^{commit}`]) : null
   if (!source) throw new Error(`No owned commit for ${memberName}; abort/remove blocked`)
   const existing = await runCommand(["git", "show-ref", "--verify", "--hash", `refs/heads/${target}`], { cwd })

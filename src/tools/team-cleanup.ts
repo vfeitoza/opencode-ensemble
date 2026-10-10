@@ -2,8 +2,8 @@ import type { ToolDeps } from "../types"
 import { requireLead, requireCanPurgeArchivedTeams, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
 import { spawnFailures } from "./team-spawn"
-import { getTeamResourceParts, mergeBranch, deleteBranch, preserveBranch, preservedBranchName, getOverlappingFiles, teamResourceSegment } from "./merge-helper"
-import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
+import { mergeBranch, deleteBranch, getOverlappingFiles, teamResourceSegment } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 import { runCommand } from "../process"
 import { preserveMemberWork } from "../member-preservation"
@@ -494,7 +494,7 @@ export async function executeTeamCleanup(
   // Force-abort active members — preserve branches BEFORE aborting
   // Preserve every owned checkout before closing admission or removing anything.
   for (const member of members) {
-    if (member.worktree_dir || member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
+    if (member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
   }
   closeTeamNotifications(deps.db, teamInfo.teamId)
   try {
@@ -517,7 +517,7 @@ export async function executeTeamCleanup(
 
   // Safety net: merge any remaining unmerged preserved branches
   for (const member of members) {
-    if (member.worktree_dir || member.worktree_branch) {
+    if (member.worktree_branch) {
       member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
     }
   }

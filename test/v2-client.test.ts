@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, spyOn } from "bun:test"
 import { createV2Client } from "../src/v2-client"
 
 /** Minimal mock of the V2 ctx domains Ensemble uses. Records calls. */
@@ -95,6 +95,16 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
       permissions: [{ action: "team_message", resource: "*", effect: "allow" }],
     })
     expect(calls.some((c) => c.method === "rules")).toBe(false)
+  })
+
+  test("missing permission.rules does not claim effective team tools were lost", async () => {
+    const { ctx } = mockCtx()
+    delete (ctx as unknown as { permission: { rules?: unknown } }).permission.rules
+    const warning = spyOn(console, "warn").mockImplementation(() => undefined)
+    try {
+      await createV2Client(ctx).session.create({ permission: [{ permission: "team_message", pattern: "*", action: "allow" }] })
+      expect(warning.mock.calls.flat().join(" ")).not.toContain("lose team tools")
+    } finally { warning.mockRestore() }
   })
 
   test("session.create re-asserts permissions via rules() so agent denies cannot bury them", async () => {
@@ -290,6 +300,14 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect(calls.some(c => c.method === "prompt")).toBe(false)
     ctx.session.get = async input => ({ id: input.sessionID, location: { directory: "/verified-worker" } })
     expect((await createV2Client(ctx).session.create({ directory: "/verified-worker", title: "worker" })).data?.id).toBe("ses_new123")
+  })
+
+  test("parent location inheritance is corrected via move before teammate admission", async () => {
+    const { ctx } = mockCtx()
+    let directory = "/lead"
+    const port = { ...ctx, session: { ...ctx.session, get: async () => ({ location: { directory } }), move: async (input: Record<string, unknown>) => { expect(input.directory).toBe("/worker"); directory = String(input.directory) } } }
+    expect((await createV2Client(port).session.create({ parentID: "ses-lead", directory: "/worker" })).data?.id).toBe("ses_new123")
+    expect(directory).toBe("/worker")
   })
 
   test("workspace.create bridges branch to directory (no workspace domain on V2 ctx)", async () => {

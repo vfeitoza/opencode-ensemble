@@ -11,6 +11,7 @@ export interface V2Context {
     switchModel(input: Record<string, unknown>): Promise<unknown>
     interrupt(input: Record<string, unknown>): Promise<unknown>
     get(input: Record<string, unknown>): Promise<unknown>
+    move?(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
     active(): Promise<Record<string, { type: string }>>
     synthetic(input: Record<string, unknown>): Promise<unknown>
@@ -117,30 +118,26 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         }
         const created = await ctx.session.create(input)
         if (options.directory) {
-          const session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          let session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          // OQ-V2-location: this host inherits a parent's location at creation
+          // despite the supplied child location. Move before prompt, then verify.
+          if (session.location?.directory !== options.directory && ctx.session.move) {
+            await ctx.session.move({ sessionID: created.id, directory: options.directory })
+            session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          }
           if (session.location?.directory !== options.directory) {
             throw new Error(`Session ${created.id} was not bound to ${options.directory}; refusing to start teammate`)
           }
         }
         if (permissions) {
-          // Session.create permissions lose to agent rules (last match wins
-          // and agent rules apply later), which strips team tools from
-          // read-only agents. Re-assert here: rules() evaluates after the
-          // agent's rules, restoring the tools. OQ-V2-rules.
-          //
-          // opencode >= 2.0.4 removed ctx.permission.rules, so the call is
-          // feature-detected. Without the guard every team_spawn died with
-          // "ctx.permission.rules is not a function" (issue #40). The re-assert
-          // is skipped, not replaced: agent rules still win on 2.x, which
-          // costs read-only agents their team tools.
+          // OQ-V2-rules: host capabilities differ from the pinned SDK. The
+          // permission evaluator on 2.0.26 honors create-time rules after
+          // switching explore/plan; method absence alone does not prove loss.
           if (typeof ctx.permission.rules === "function") {
             await ctx.permission.rules({ sessionID: created.id, permissions })
           } else {
-            // v2 host without permission.rules: session.create permissions
-            // are last to win vs agent rules, so read-only agents may lose
-            // their team tools. Log explicitly so it is never silent.
             console.warn(
-              "[ensemble] ctx.permission.rules unavailable on this host; skipped permission re-assert — read-only agents may lose team tools. Requires host with permission.rules support."
+              "[ensemble] permission.rules unavailable; rules were supplied at session creation. Effective permissions require host-specific verification."
             )
           }
         }
