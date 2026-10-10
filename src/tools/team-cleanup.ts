@@ -7,6 +7,7 @@ import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } 
 import { log } from "../log"
 import { runCommand } from "../process"
 import { preserveMemberWork } from "../member-preservation"
+import { closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../notifications"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -425,7 +426,9 @@ export async function executeTeamCleanup(
     validatePurgeTargetsStillArchived(deps, targets)
     validatePurgeResources(deps, targets)
     const branchesByTeam = await collectPreservedBranches(targets, deps.directory, _listBranches ?? listPreservedBranches)
-    const preview = buildPurgePreview(deps, targets, branchesByTeam)
+    const legacyCounts = await Promise.all(targets.map(async target => ({ name: target.name, count: await countAmbiguousNotifications(deps.client, deps.db, target.id) })))
+    const legacyWarning = legacyCounts.filter(item => item.count > 0).map(item => `${item.name}: ${item.count} legacy notification(s) have ambiguous ownership and will NOT be cancelled automatically.`).join("\n")
+    const preview = [buildPurgePreview(deps, targets, branchesByTeam), legacyWarning].filter(Boolean).join("\n\n")
     if (!args.confirm_purge) {
       const confirmToken = deps.purgeApprovals.create(sessionId, targets.map(target => target.id))
       return buildPurgeConfirmationInstructions(preview, confirmToken)
@@ -435,6 +438,11 @@ export async function executeTeamCleanup(
       throw new Error("A purge confirmation token is required. First call team_cleanup without confirm_purge, then use the question tool before confirming.")
     }
     deps.purgeApprovals.consume(sessionId, args.confirm_token, targets.map(target => target.id))
+
+    for (const target of targets) {
+      closeTeamNotifications(deps.db, target.id)
+      await cancelTeamNotifications(deps.client, deps.db, target.id)
+    }
 
     validatePurgeTargetsStillArchived(deps, targets)
     validatePurgeResources(deps, targets)
@@ -448,7 +456,7 @@ export async function executeTeamCleanup(
     deleteArchivedTeams(deps, targets)
 
     const noun = targets.length === 1 ? "archived team" : "archived teams"
-    return `Permanently deleted ${targets.length} ${noun}: ${targets.map(target => target.name).join(", ")}.`
+    return `Permanently deleted ${targets.length} ${noun}: ${targets.map(target => target.name).join(", ")}.${legacyWarning ? `\nWarning: ${legacyWarning}` : ""}`
   }
 
   const teamInfo = requireLead(deps, sessionId)
@@ -484,6 +492,19 @@ export async function executeTeamCleanup(
   }
 
   // Force-abort active members — preserve branches BEFORE aborting
+  // Preserve every owned checkout before closing admission or removing anything.
+  for (const member of members) {
+    if (member.worktree_dir || member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
+  }
+  closeTeamNotifications(deps.db, teamInfo.teamId)
+  try {
+    await cancelTeamNotifications(deps.client, deps.db, teamInfo.teamId)
+  } catch (error) {
+    // Keep durable cancellation evidence and an archived target for explicit retry.
+    deps.db.run("UPDATE team SET status='archived',time_updated=? WHERE id=?", [Date.now(), teamInfo.teamId])
+    deps.registry.unregisterTeam(teamInfo.teamId)
+    throw new Error(`Team archived but inbox cancellation incomplete; purge blocked: ${error instanceof Error ? error.message : String(error)}`)
+  }
   if (args.force) {
     for (const member of active) {
       // Preserve branch before abort — session.abort() may destroy the worktree + branch

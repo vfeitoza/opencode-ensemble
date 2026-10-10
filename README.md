@@ -254,6 +254,14 @@ metadata. Their delivery records survive team deletion so archive/purge can
 reconcile a host response that arrives late. The message body is still stored
 in the shared task/message database before the asynchronous wake is sent.
 
+Archive/purge closes notification admission and cancels only pending inbox items
+whose IDs are recorded as Ensemble-owned. Failed cancellation retains durable
+evidence and blocks purge for retry. Legacy notification-looking text alone
+is not proof of ownership: the preview reports it and leaves it untouched.
+On hosts without a native inbox context, the public CLI bridge must answer a
+per-instance RPC identity challenge before any inbox operation; mismatched or
+unavailable servers cannot be used to delete queued messages.
+
 Requested worktree isolation fails closed: if creation or branch establishment
 fails, the teammate does not start in the shared tree. Use `worktree: false`
 explicitly to share a directory. Read-only agents omit worktrees by default,

@@ -38,6 +38,11 @@ export interface PermissionRule {
  */
 export interface PluginClient {
   session: {
+    /** Optional V2 host inbox capability; never implemented with unauthenticated guessed URLs. */
+    inbox?: {
+      list(options: { sessionID: string }): Promise<{ data?: Array<{ id: string; type: string; metadata?: Record<string, unknown>; payload?: { text?: string } }> }>
+      cancel(options: { sessionID: string; inboxID: string }): Promise<unknown>
+    }
     create(options: {
       parentID?: string
       title?: string

@@ -10,6 +10,8 @@ export interface CommandResult {
 
 export interface CommandOptions {
   cwd?: string
+  /** Bound only this owned subprocess; never signals another process or service. */
+  timeoutMs?: number
 }
 
 function collect(stream: Readable | null, chunks: Buffer[]): void {
@@ -36,6 +38,7 @@ export function runCommand(args: string[], options: CommandOptions = {}): Promis
     const child = spawn(command, commandArgs, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
     })
 
     collect(child.stdout, stdout)

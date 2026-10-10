@@ -66,8 +66,8 @@ describe("v2-setup (issue #36)", () => {
     const { ctx } = mockSetupCtx()
     let handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>> = {}
     ctx.rpc = {
-      register: async (_definition, registered) => {
-        handlers = registered
+      register: async (definition, registered) => {
+        if ((definition as { id?: string }).id === "ensemble") handlers = registered
         return { events: { emit: async () => undefined } }
       },
     }

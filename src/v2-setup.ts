@@ -23,6 +23,8 @@ import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
 import { preserveMemberHead } from "./member-preservation"
+import { createVerifiedInboxBridge } from "./v2-inbox"
+import { reconcileNotifications } from "./notifications"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -44,7 +46,7 @@ export interface V2SetupContext {
     register(
       definition: unknown,
       handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>>,
-    ): Promise<{ events: { emit(name: string, data: unknown): Promise<unknown> } }>
+    ): Promise<{ events: { emit(name: string, data: unknown): Promise<unknown> }; dispose?(): Promise<void> }>
   }
   shell: {
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
@@ -343,7 +345,14 @@ export async function setupEnsemble(
   // API gains session scope — team tools and prompts carry identity instead.
   await ctx.shell.hook("create.before", () => undefined)
 
+  let inboxBridge: Awaited<ReturnType<typeof createVerifiedInboxBridge>> | undefined
+  if (!ctx.session.inbox) {
+    try { inboxBridge = await createVerifiedInboxBridge(ctx.rpc, ctx.location.directory) } catch (error) {
+      vlog(`init:inbox-bridge:unavailable err=${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const client = createV2Client(ctx, {
+    inbox: inboxBridge?.inbox,
     projectID: ctx.location.project?.id,
     projectDirectory: ctx.location.project?.canonical,
     ...(rpc ? { rpcEmitter: rpc } : {}),
@@ -359,6 +368,7 @@ export async function setupEnsemble(
     progressTracker,
   }
   await registerV2Tools(ctx.tool, deps)
+  void reconcileNotifications(client, db).catch(error => vlog(`init:notification-reconciliation:failed err=${String(error)}`))
 
   // Dashboard mirrors V1: main instance only, skipped when port is 0.
   let dashboard: DashboardServer | null = null
@@ -378,6 +388,7 @@ export async function setupEnsemble(
     dispose: async () => {
       controller.abort()
       dashboard?.stop()
+      await inboxBridge?.dispose()
     },
   }
 }

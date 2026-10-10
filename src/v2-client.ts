@@ -4,6 +4,7 @@ import { ensureWorktreeBranch } from "./v2-worktree"
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
   session: {
+    inbox?: NonNullable<PluginClient["session"]["inbox"]>
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
     switchAgent(input: Record<string, unknown>): Promise<unknown>
@@ -32,6 +33,7 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps {
+  inbox?: NonNullable<PluginClient["session"]["inbox"]>
   /** Host project ID, distinct from the directory-keyed Ensemble project row. */
   projectID?: string
   /** Canonical checkout to exclude from host worktree inventory. */
@@ -89,6 +91,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
   }
   return {
     session: {
+      ...((ctx.session.inbox ?? deps.inbox) ? { inbox: ctx.session.inbox ?? deps.inbox } : {}),
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
         if (options.parentID) input["parentID"] = options.parentID

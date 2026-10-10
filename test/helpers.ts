@@ -22,6 +22,7 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
   return {
     calls,
     session: {
+      inbox: { list: async () => ({ data: [] }), cancel: async () => undefined },
       async create(options) {
         calls.push({ method: "session.create", args: [options] })
         return { data: { id: `mock-sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` } }
