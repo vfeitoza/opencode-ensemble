@@ -184,6 +184,13 @@ condition — sometimes the branch survives, sometimes it doesn't.
 branch to `ensemble/preserved/{team}/{name}`, a standalone git ref
 that is not tied to any worktree. OpenCode cannot delete it.
 
+The lifecycle adapter now resolves the member's **current checkout HEAD** through
+`preserveMemberHead`/`preserveMemberWork`, not just the branch saved when graceful
+shutdown began. Verify/update the standalone preserved ref immediately before
+abort or worktree removal. Failed preservation or uncommitted work blocks these
+operations even when `force` is requested. Late spawn resources retain ownership
+in `team_spawn_resource` for reconciliation rather than being silently deleted.
+
 ### Call sites (audit these if you change shutdown/cleanup)
 
 1. `team-shutdown.ts` → `preserveAndAbort()` — idle/force shutdown

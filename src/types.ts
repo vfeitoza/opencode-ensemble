@@ -20,6 +20,8 @@ export interface ToolDeps {
   config: Required<EnsembleConfig>
   /** Stall/activity tracker — shared with the Watchdog. */
   progressTracker: ProgressTracker
+  /** Optional storage/backend port for final committed-work preservation. */
+  preserveMember?: (teamId: string, memberName: string, allowDirty?: boolean) => Promise<string | null>
 }
 
 /** A single permission rule for session-level enforcement. */
@@ -36,6 +38,13 @@ export interface PermissionRule {
  */
 export interface PluginClient {
   session: {
+    /** V1 has no persistent synthetic inbox; preserve its original notification behavior. */
+    notificationMode?: "legacy" | "queued"
+    /** Optional V2 host inbox capability; never implemented with unauthenticated guessed URLs. */
+    inbox?: {
+      list(options: { sessionID: string }): Promise<{ data?: Array<{ id: string; type: string; metadata?: Record<string, unknown>; payload?: { text?: string } }> }>
+      cancel(options: { sessionID: string; inboxID: string }): Promise<unknown>
+    }
     create(options: {
       parentID?: string
       title?: string
@@ -52,6 +61,8 @@ export interface PluginClient {
       system?: string
       /** V2: deliver as a synthetic (system) message instead of a user prompt. */
       synthetic?: boolean
+      /** Owned V2 inbox notification identity; V1 transport strips this extension. */
+      notification?: { teamId: string; messageId: string; inboxId: string }
     }): Promise<unknown>
     abort(options: { sessionID: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>

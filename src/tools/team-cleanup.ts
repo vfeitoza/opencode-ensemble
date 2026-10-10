@@ -2,10 +2,12 @@ import type { ToolDeps } from "../types"
 import { requireLead, requireCanPurgeArchivedTeams, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
 import { spawnFailures } from "./team-spawn"
-import { getTeamResourceParts, mergeBranch, deleteBranch, preserveBranch, preservedBranchName, getOverlappingFiles, teamResourceSegment } from "./merge-helper"
-import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
+import { mergeBranch, deleteBranch, getOverlappingFiles, teamResourceSegment } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 import { runCommand } from "../process"
+import { preserveMemberWork } from "../member-preservation"
+import { closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../notifications"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -112,6 +114,9 @@ function deleteArchivedTeams(deps: ToolDeps, targets: PurgeTarget[]): void {
   })
   transaction(targets)
   targets.forEach(team => {
+    // Only successfully registered spawns are terminal here. Retain timeout
+    // ownership evidence until its late resource has actually been reconciled.
+    deps.db.run("DELETE FROM team_spawn_resource WHERE team_id=? AND state='registered'", [team.id])
     deps.registry.unregisterTeam(team.id)
     spawnFailures.delete(team.id)
   })
@@ -424,7 +429,9 @@ export async function executeTeamCleanup(
     validatePurgeTargetsStillArchived(deps, targets)
     validatePurgeResources(deps, targets)
     const branchesByTeam = await collectPreservedBranches(targets, deps.directory, _listBranches ?? listPreservedBranches)
-    const preview = buildPurgePreview(deps, targets, branchesByTeam)
+    const legacyCounts = await Promise.all(targets.map(async target => ({ name: target.name, count: await countAmbiguousNotifications(deps.client, deps.db, target.id) })))
+    const legacyWarning = legacyCounts.filter(item => item.count > 0).map(item => `${item.name}: ${item.count} legacy notification(s) have ambiguous ownership and will NOT be cancelled automatically.`).join("\n")
+    const preview = [buildPurgePreview(deps, targets, branchesByTeam), legacyWarning].filter(Boolean).join("\n\n")
     if (!args.confirm_purge) {
       const confirmToken = deps.purgeApprovals.create(sessionId, targets.map(target => target.id))
       return buildPurgeConfirmationInstructions(preview, confirmToken)
@@ -434,6 +441,11 @@ export async function executeTeamCleanup(
       throw new Error("A purge confirmation token is required. First call team_cleanup without confirm_purge, then use the question tool before confirming.")
     }
     deps.purgeApprovals.consume(sessionId, args.confirm_token, targets.map(target => target.id))
+
+    for (const target of targets) {
+      closeTeamNotifications(deps.db, target.id)
+      await cancelTeamNotifications(deps.client, deps.db, target.id)
+    }
 
     validatePurgeTargetsStillArchived(deps, targets)
     validatePurgeResources(deps, targets)
@@ -447,7 +459,7 @@ export async function executeTeamCleanup(
     deleteArchivedTeams(deps, targets)
 
     const noun = targets.length === 1 ? "archived team" : "archived teams"
-    return `Permanently deleted ${targets.length} ${noun}: ${targets.map(target => target.name).join(", ")}.`
+    return `Permanently deleted ${targets.length} ${noun}: ${targets.map(target => target.name).join(", ")}.${legacyWarning ? `\nWarning: ${legacyWarning}` : ""}`
   }
 
   const teamInfo = requireLead(deps, sessionId)
@@ -483,19 +495,23 @@ export async function executeTeamCleanup(
   }
 
   // Force-abort active members — preserve branches BEFORE aborting
+  // Preserve every owned checkout before closing admission or removing anything.
+  for (const member of members) {
+    if (member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
+  }
+  closeTeamNotifications(deps.db, teamInfo.teamId)
+  try {
+    await cancelTeamNotifications(deps.client, deps.db, teamInfo.teamId)
+  } catch (error) {
+    // Keep durable cancellation evidence and an archived target for explicit retry.
+    deps.db.run("UPDATE team SET status='archived',time_updated=? WHERE id=?", [Date.now(), teamInfo.teamId])
+    deps.registry.unregisterTeam(teamInfo.teamId)
+    throw new Error(`Team archived but inbox cancellation incomplete; purge blocked: ${error instanceof Error ? error.message : String(error)}`)
+  }
   if (args.force) {
     for (const member of active) {
       // Preserve branch before abort — session.abort() may destroy the worktree + branch
-      if (member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-        const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
-        const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, deps.directory)
-        if (ok) {
-          deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, teamInfo.teamId, member.name])
-          member.worktree_branch = safeBranch
-        }
-      }
+      member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
       try {
         await deps.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
@@ -503,6 +519,11 @@ export async function executeTeamCleanup(
   }
 
   // Safety net: merge any remaining unmerged preserved branches
+  for (const member of members) {
+    if (member.worktree_branch) {
+      member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
+    }
+  }
   const unmerged = members.filter(m => m.worktree_branch !== null)
   const merged: string[] = []
   const conflicted: string[] = []
@@ -552,6 +573,7 @@ export async function executeTeamCleanup(
   // Clean up in-memory state
   deps.registry.unregisterTeam(teamInfo.teamId)
   spawnFailures.delete(teamInfo.teamId)
+  deps.db.run("DELETE FROM team_spawn_resource WHERE team_id=? AND state='registered'", [teamInfo.teamId])
 
   // Build response
   const parts: string[] = [`Team "${teamInfo.teamName}" cleaned up.`]

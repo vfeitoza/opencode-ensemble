@@ -36,8 +36,13 @@ export function wrapThrowingClient(raw: unknown): PluginClient {
   const r = raw as RawClient
   return {
     session: {
+      notificationMode: "legacy",
       create: throwing(r.session.create.bind(r.session)),
-      promptAsync: throwing(r.session.promptAsync.bind(r.session)),
+      promptAsync: throwing(async (...args: unknown[]) => {
+        const options = args[0] as Record<string, unknown>
+        const { notification: _notification, ...rawOptions } = options
+        return r.session.promptAsync(rawOptions)
+      }),
       abort: throwing(r.session.abort.bind(r.session)),
       status: throwing(r.session.status.bind(r.session)),
       messages: throwing(r.session.messages.bind(r.session)),

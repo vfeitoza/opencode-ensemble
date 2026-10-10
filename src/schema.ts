@@ -203,7 +203,32 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_member ADD COLUMN retry_until INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
-   ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+    ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+  // OQ-202: retain ownership of resources whose host response arrives after a
+  // spawn timeout; team purge must not silently erase reconciliation evidence.
+  `CREATE TABLE team_spawn_resource (
+     id TEXT PRIMARY KEY,
+     team_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     worktree_dir TEXT,
+     worktree_branch TEXT,
+     session_id TEXT,
+     state TEXT NOT NULL CHECK(state IN ('creating','worktree_ready','session_ready','registered','failed','timed_out')),
+     time_created INTEGER NOT NULL,
+     time_updated INTEGER NOT NULL
+   );`,
+  `CREATE TABLE team_notification (
+     id TEXT PRIMARY KEY,
+     team_id TEXT NOT NULL,
+     message_id TEXT NOT NULL,
+     session_id TEXT NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('pending','admitted','cancel_requested','cancelled','failed')),
+     time_created INTEGER NOT NULL,
+     time_updated INTEGER NOT NULL,
+     UNIQUE(team_id,message_id,session_id)
+   );
+   CREATE INDEX team_notification_scope_idx ON team_notification(team_id,state);
+   CREATE TABLE team_notification_scope(team_id TEXT PRIMARY KEY,closed_at INTEGER NOT NULL);`,
 ]
 
 /**

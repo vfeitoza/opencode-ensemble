@@ -22,10 +22,13 @@ import { startDashboard, type DashboardServer } from "./dashboard"
 import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
+import { preserveMemberHead } from "./member-preservation"
+import { createVerifiedInboxBridge } from "./v2-inbox"
+import { reconcileNotifications } from "./notifications"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
-  location: { directory: string }
+  location: { directory: string; project?: { id: string; directory: string; canonical: string } }
   options: Record<string, unknown>
   session: V2Context["session"] & {
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
@@ -43,7 +46,7 @@ export interface V2SetupContext {
     register(
       definition: unknown,
       handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>>,
-    ): Promise<{ events: { emit(name: string, data: unknown): Promise<unknown> } }>
+    ): Promise<{ events: { emit(name: string, data: unknown): Promise<unknown> }; dispose?(): Promise<void> }>
   }
   shell: {
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
@@ -154,7 +157,26 @@ export async function setupEnsemble(
   const controller = new AbortController()
 
   const dispatch = async (event: V2EventLike): Promise<void> => {
+    const sessionID = event.data?.sessionID
+    const entry = sessionID ? registry.getBySession(sessionID) : undefined
+    if (entry) {
+      const member = db.query("SELECT status FROM team_member WHERE team_id=? AND name=?").get(entry.teamId, entry.memberName) as { status: string } | null
+      if (member?.status === "shutdown_requested" && ["session.status", "session.idle", "session.execution.succeeded", "session.execution.failed", "session.execution.started"].includes(event.type)) {
+        try {
+          await preserveMemberHead(db, entry.teamId, entry.memberName, ctx.location.directory)
+        } catch (error) {
+          // Keep shutdown_requested and the event stream alive. Do not interrupt
+          // a dirty/unpreserved member merely to satisfy a status transition.
+          vlog(`event:preservation-blocked member=${entry.memberName} err=${String(error)}`)
+          return
+        }
+      }
+    }
     const transition = dispatchV2Event(db, registry, tracker, event)
+    if (transition?.to === "busy_while_shutdown" && sessionID) {
+      await ctx.session.interrupt({ sessionID, resume: false })
+      return
+    }
     // Idle-without-report nudge (parity with V1): a member that went idle
     // without ever messaging the lead gets ONE reminder to report via
     // team_message. Without this, weak models finish silently and the lead
@@ -218,10 +240,12 @@ export async function setupEnsemble(
             teamInfo.teamId,
           ) as { c: number }
         ).c
+        const requested = (input as { openTaskLimit?: number }).openTaskLimit ?? 5
+        const limit = Math.max(1, Math.min(5, Math.floor(requested)))
         const openTasks = db.query(
-          "SELECT id, content, status, assignee FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked') ORDER BY time_created ASC, id ASC",
-        ).all(teamInfo.teamId)
-        return { team: teamInfo.teamName, members, tasks: { pending, done }, openTasks }
+          "SELECT id, content, status, assignee FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked') ORDER BY time_created ASC, id ASC LIMIT ?",
+        ).all(teamInfo.teamId, limit)
+        return { team: teamInfo.teamName, members, tasks: { pending, done }, openTasks, openTaskTotal: pending }
       },
     })
   } catch (err) {
@@ -330,7 +354,18 @@ export async function setupEnsemble(
   // API gains session scope — team tools and prompts carry identity instead.
   await ctx.shell.hook("create.before", () => undefined)
 
-  const client = createV2Client(ctx, rpc ? { rpcEmitter: rpc } : {})
+  let inboxBridge: Awaited<ReturnType<typeof createVerifiedInboxBridge>> | undefined
+  if (!ctx.session.inbox) {
+    try { inboxBridge = await createVerifiedInboxBridge(ctx.rpc, ctx.location.directory) } catch (error) {
+      vlog(`init:inbox-bridge:unavailable err=${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const client = createV2Client(ctx, {
+    inbox: inboxBridge?.inbox,
+    projectID: ctx.location.project?.id,
+    projectDirectory: ctx.location.project?.canonical,
+    ...(rpc ? { rpcEmitter: rpc } : {}),
+  })
   const deps: ToolDeps = {
     db,
     registry,
@@ -342,6 +377,7 @@ export async function setupEnsemble(
     progressTracker,
   }
   await registerV2Tools(ctx.tool, deps)
+  void reconcileNotifications(client, db).catch(error => vlog(`init:notification-reconciliation:failed err=${String(error)}`))
 
   // Dashboard mirrors V1: main instance only, skipped when port is 0.
   let dashboard: DashboardServer | null = null
@@ -361,6 +397,7 @@ export async function setupEnsemble(
     dispose: async () => {
       controller.abort()
       dashboard?.stop()
+      await inboxBridge?.dispose()
     },
   }
 }

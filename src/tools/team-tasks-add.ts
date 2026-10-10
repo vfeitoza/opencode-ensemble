@@ -1,6 +1,7 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { generateId } from "../util"
+import { withImmediateTransaction } from "../db"
 
 interface TaskInput {
   content: string
@@ -17,6 +18,7 @@ export async function executeTeamTasksAdd(
   args: { tasks: TaskInput[] },
   sessionId: string,
 ): Promise<string> {
+  return withImmediateTransaction(deps.db, () => {
   const teamInfo = requireTeamMember(deps, sessionId)
 
   // Validate every dependency before inserting anything. A typo'd id used to
@@ -63,4 +65,5 @@ export async function executeTeamTasksAdd(
   }
 
   return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}`
+  })
 }

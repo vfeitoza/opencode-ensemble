@@ -39,6 +39,12 @@ describe("team_tasks_list", () => {
 })
 
 describe("team_tasks_add", () => {
+  test("second SQL insert failure rolls back the complete batch", async () => {
+    const deps = setupDeps()
+    insertTeam(deps.db, "atomic-team", "atomic", "lead-atomic")
+    await expect(executeTeamTasksAdd(deps, { tasks: [{ content: "first", priority: "medium" }, { content: "bad", priority: "invalid" }] }, "lead-atomic")).rejects.toThrow()
+    expect(deps.db.query("SELECT id FROM team_task WHERE team_id='atomic-team'").all()).toHaveLength(0)
+  })
   let deps: ReturnType<typeof setupDeps>
 
   beforeEach(() => {

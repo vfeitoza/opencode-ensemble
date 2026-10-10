@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, spyOn } from "bun:test"
 import { createV2Client } from "../src/v2-client"
 
 /** Minimal mock of the V2 ctx domains Ensemble uses. Records calls. */
@@ -61,22 +61,17 @@ function mockCtx() {
         calls.push({ domain: "worktree", method: "remove", input })
         return undefined
       },
-      list: async () => {
-        calls.push({ domain: "worktree", method: "list", input: {} })
+      list: async (input: Record<string, unknown> = {}) => {
+        calls.push({ domain: "worktree", method: "list", input })
         return [{ directory: "/wt/ensemble-proj-team-alice" }, { directory: "/wt/other" }]
       },
-      refresh: async () => {
-        calls.push({ domain: "worktree", method: "refresh", input: {} })
+      refresh: async (input: Record<string, unknown> = {}) => {
+        calls.push({ domain: "worktree", method: "refresh", input })
         return undefined
       },
     },
   }
   return { calls, ctx }
-}
-
-/** Fake git branch lookup: dir → branch. */
-function mockGit(map: Record<string, string | null>) {
-  return async (directory: string) => map[directory] ?? null
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
@@ -100,6 +95,16 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
       permissions: [{ action: "team_message", resource: "*", effect: "allow" }],
     })
     expect(calls.some((c) => c.method === "rules")).toBe(false)
+  })
+
+  test("missing permission.rules does not claim effective team tools were lost", async () => {
+    const { ctx } = mockCtx()
+    delete (ctx as unknown as { permission: { rules?: unknown } }).permission.rules
+    const warning = spyOn(console, "warn").mockImplementation(() => undefined)
+    try {
+      await createV2Client(ctx).session.create({ permission: [{ permission: "team_message", pattern: "*", action: "allow" }] })
+      expect(warning.mock.calls.flat().join(" ")).not.toContain("lose team tools")
+    } finally { warning.mockRestore() }
   })
 
   test("session.create re-asserts permissions via rules() so agent denies cannot bury them", async () => {
@@ -145,6 +150,12 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
       method: "synthetic",
       input: { sessionID: "ses_child", delivery: "queue" },
     })
+  })
+
+  test("owned synthetic wake preserves deterministic ID and ownership metadata", async () => {
+    const { calls, ctx } = mockCtx()
+    await createV2Client(ctx).session.promptAsync({ sessionID: "ses-child", parts: [{ type: "text", text: "wake" }], synthetic: true, notification: { teamId: "team1", messageId: "message1", inboxId: "msg_owned" } })
+    expect(calls[0]?.input).toMatchObject({ id: "msg_owned", metadata: { ensemble: { teamId: "team1", messageId: "message1", notificationId: "msg_owned" } } })
   })
 
   test("session.promptAsync maps to queue-delivery prompt", async () => {
@@ -229,10 +240,11 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
   test("worktree.create discovers the branch via git (V2 reports directory only)", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never, {
-      gitBranch: mockGit({ "/wt/ensemble-proj-team-alice": "ensemble-proj-team-alice" }),
+      projectID: "host-project",
+      ensureBranch: async (_directory: string, name: string) => name,
     })
     const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-proj-team-alice" } })
-    expect(calls[0]?.input).toMatchObject({ name: "ensemble-proj-team-alice" })
+    expect(calls[0]?.input).toEqual({ projectID: "host-project", name: "ensemble-proj-team-alice" })
     expect(result.data).toMatchObject({
       name: "ensemble-proj-team-alice",
       branch: "ensemble-proj-team-alice",
@@ -240,22 +252,39 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     })
   })
 
-  test("worktree.create falls back to the requested name when git lookup fails", async () => {
+  test("worktree.create rejects failed branch establishment instead of inventing a ref", async () => {
     const { ctx } = mockCtx()
-    const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    expect(result.data?.branch).toBe("ensemble-x")
+    const client = createV2Client(ctx as never, { projectID: "host-project", ensureBranch: async () => { throw new Error("Git branch unavailable") } })
+    await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("Git branch unavailable")
+  })
+
+  test("missing host project ID rejects before creating any worktree", async () => {
+    const { calls, ctx } = mockCtx()
+    const client = createV2Client(ctx as never)
+    await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("projectID")
+    expect(calls).toHaveLength(0)
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {
     const { calls, ctx } = mockCtx()
-    const client = createV2Client(ctx as never)
+    const client = createV2Client(ctx as never, { projectID: "host-project" })
     await client.worktree.remove({ worktreeRemoveInput: { directory: "/wt/ensemble-x" } })
-    expect(calls[0]?.input).toMatchObject({ directory: "/wt/ensemble-x", force: false })
+    expect(calls[0]?.input).toEqual({ projectID: "host-project", directory: "/wt/ensemble-x", force: false })
     const list = await client.worktree.list()
     expect(list.data?.[0]).toMatchObject({ directory: "/wt/ensemble-proj-team-alice" })
     await client.worktree.reset({ worktreeResetInput: { directory: "/wt/ensemble-x" } })
-    expect(calls[calls.length - 1]).toMatchObject({ domain: "worktree", method: "refresh" })
+    expect(calls.find(c => c.method === "list")?.input).toEqual({ projectID: "host-project" })
+    expect(calls[calls.length - 1]).toMatchObject({ domain: "worktree", method: "refresh", input: { projectID: "host-project" } })
+  })
+
+  test("worktree.list excludes the host's root checkout from cleanup candidates", async () => {
+    const { ctx } = mockCtx()
+    ctx.worktree.list = async () => [
+      { directory: "/wt/ensemble-lead-root" },
+      { directory: "/wt/ensemble-worker", type: "worktree" },
+    ]
+    const result = await createV2Client(ctx, { projectID: "host-project", projectDirectory: "/wt/ensemble-lead-root" }).worktree.list()
+    expect(result.data?.map(tree => tree.directory)).toEqual(["/wt/ensemble-worker"])
   })
 
   test("session.create routes a v2dir workspace id to location.directory", async () => {
@@ -263,6 +292,22 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     const client = createV2Client(ctx as never)
     await client.session.create({ title: "t", workspaceID: "v2dir:/wt/ensemble-x" })
     expect(calls[0]?.input).toMatchObject({ location: { directory: "/wt/ensemble-x" } })
+  })
+
+  test("directory binding mismatch rejects before any prompt is sent", async () => {
+    const { calls, ctx } = mockCtx()
+    await expect(createV2Client(ctx).session.create({ directory: "/verified-worker", title: "worker" })).rejects.toThrow("not bound")
+    expect(calls.some(c => c.method === "prompt")).toBe(false)
+    ctx.session.get = async input => ({ id: input.sessionID, location: { directory: "/verified-worker" } })
+    expect((await createV2Client(ctx).session.create({ directory: "/verified-worker", title: "worker" })).data?.id).toBe("ses_new123")
+  })
+
+  test("parent location inheritance is corrected via move before teammate admission", async () => {
+    const { ctx } = mockCtx()
+    let directory = "/lead"
+    const port = { ...ctx, session: { ...ctx.session, get: async () => ({ location: { directory } }), move: async (input: Record<string, unknown>) => { expect(input.directory).toBe("/worker"); directory = String(input.directory) } } }
+    expect((await createV2Client(port).session.create({ parentID: "ses-lead", directory: "/worker" })).data?.id).toBe("ses_new123")
+    expect(directory).toBe("/worker")
   })
 
   test("workspace.create bridges branch to directory (no workspace domain on V2 ctx)", async () => {

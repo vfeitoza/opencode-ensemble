@@ -4,6 +4,7 @@ import { requireTeamMember } from "./shared"
 import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { parseModelId, getMemberModel } from "../member-model"
 import { log } from "../log"
+import { queueTeamWake } from "../notifications"
 
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
@@ -122,13 +123,7 @@ export async function executeTeamMessage(
   // because session.idle events are scoped per-instance.
   if (isToLead) {
     log(`team_message:wake-lead from=${senderName} recipientSession=${recipientSessionId}`)
-    deps.client.session.promptAsync({
-      sessionID: recipientSessionId,
-      parts: [{ type: "text", text: `[System: New team message from ${senderName}]` }],
-      synthetic: true,
-    }).catch((err) => {
-      log(`team_message:wake-lead:failed from=${senderName} err=${err instanceof Error ? err.message : String(err)}`)
-    })
+    queueTeamWake(deps.client, deps.db, { teamId: teamInfo.teamId, messageId: msgId, sessionId: recipientSessionId, text: `[System: New team message from ${senderName}]` })
     return `Message sent to ${args.to}.`
   }
 

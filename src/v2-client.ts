@@ -1,15 +1,17 @@
 import type { PluginClient } from "./types"
-import { runCommand } from "./process"
+import { ensureWorktreeBranch } from "./v2-worktree"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
   session: {
+    inbox?: NonNullable<PluginClient["session"]["inbox"]>
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
     switchAgent(input: Record<string, unknown>): Promise<unknown>
     switchModel(input: Record<string, unknown>): Promise<unknown>
     interrupt(input: Record<string, unknown>): Promise<unknown>
     get(input: Record<string, unknown>): Promise<unknown>
+    move?(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
     active(): Promise<Record<string, { type: string }>>
     synthetic(input: Record<string, unknown>): Promise<unknown>
@@ -17,8 +19,8 @@ export interface V2Context {
   worktree: {
     create(input: Record<string, unknown>): Promise<{ directory: string }>
     remove(input: Record<string, unknown>): Promise<unknown>
-    list(): Promise<Array<{ directory: string }>>
-    refresh(): Promise<unknown>
+    list(input: Record<string, unknown>): Promise<Array<{ directory: string; type?: string }>>
+    refresh(input: Record<string, unknown>): Promise<unknown>
   }
   // OQ-V2-rules: host 2.0.4 removes permission.rules; the adapter
   // feature-detects it at runtime, so the type is optional here.
@@ -32,23 +34,17 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps {
-  /** Current branch checked out in a directory, or null when unknown. */
-  gitBranch?: (directory: string) => Promise<string | null>
+  inbox?: NonNullable<PluginClient["session"]["inbox"]>
+  /** Host project ID, distinct from the directory-keyed Ensemble project row. */
+  projectID?: string
+  /** Canonical checkout to exclude from host worktree inventory. */
+  projectDirectory?: string
+  /** Establish a real branch in the checkout returned by the host. */
+  ensureBranch?: typeof ensureWorktreeBranch
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
   rpcEmitter?: { events: { emit(name: string, data: unknown): Promise<unknown> } }
-}
-
-/** Current branch in a directory via git. */
-async function gitBranchDefault(directory: string): Promise<string | null> {
-  try {
-    const result = await runCommand(["git", "branch", "--show-current"], { cwd: directory })
-    const branch = result.stdout.trim()
-    return result.exitCode === 0 && branch ? branch : null
-  } catch {
-    return null
-  }
 }
 
 /** Concatenate the text parts of a promptAsync payload into one string. */
@@ -75,8 +71,8 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   states here, extend the mapping.
  * - tui.*: no-op. Toasts and session-select move to the CLI (`./tui`) plugin
  *   in a later phase — the server plugin must not depend on a TUI.
- * - worktree.create: V2 reports only the directory, so the branch is read
- *   back via git (falls back to the requested name). OQ-V2-branch.
+ * - worktree.create: the host project ID scopes every worktree operation;
+ *   a detached checkout gets a verified named branch before it is returned.
  * - worktree.list: V2 entries carry directory only; name is the basename
  *   (recovery filters on the `ensemble-` prefix — a non-matching dir is
  *   skipped, never wrongly deleted). reset has no production callers and
@@ -89,9 +85,14 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   column stays the source of truth and is still nulled by cleanup.
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
-  const gitBranch = deps.gitBranch ?? gitBranchDefault
+  const establishBranch = deps.ensureBranch ?? ensureWorktreeBranch
+  const projectID = (): string => {
+    if (!deps.projectID) throw new Error("V2 worktree operations require the host projectID")
+    return deps.projectID
+  }
   return {
     session: {
+      ...((ctx.session.inbox ?? deps.inbox) ? { inbox: ctx.session.inbox ?? deps.inbox } : {}),
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
         if (options.parentID) input["parentID"] = options.parentID
@@ -116,25 +117,27 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           }
         }
         const created = await ctx.session.create(input)
+        if (options.directory) {
+          let session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          // OQ-V2-location: this host inherits a parent's location at creation
+          // despite the supplied child location. Move before prompt, then verify.
+          if (session.location?.directory !== options.directory && ctx.session.move) {
+            await ctx.session.move({ sessionID: created.id, directory: options.directory })
+            session = await ctx.session.get({ sessionID: created.id }) as { location?: { directory?: string } }
+          }
+          if (session.location?.directory !== options.directory) {
+            throw new Error(`Session ${created.id} was not bound to ${options.directory}; refusing to start teammate`)
+          }
+        }
         if (permissions) {
-          // Session.create permissions lose to agent rules (last match wins
-          // and agent rules apply later), which strips team tools from
-          // read-only agents. Re-assert here: rules() evaluates after the
-          // agent's rules, restoring the tools. OQ-V2-rules.
-          //
-          // opencode >= 2.0.4 removed ctx.permission.rules, so the call is
-          // feature-detected. Without the guard every team_spawn died with
-          // "ctx.permission.rules is not a function" (issue #40). The re-assert
-          // is skipped, not replaced: agent rules still win on 2.x, which
-          // costs read-only agents their team tools.
+          // OQ-V2-rules: host capabilities differ from the pinned SDK. The
+          // permission evaluator on 2.0.26 honors create-time rules after
+          // switching explore/plan; method absence alone does not prove loss.
           if (typeof ctx.permission.rules === "function") {
             await ctx.permission.rules({ sessionID: created.id, permissions })
           } else {
-            // v2 host without permission.rules: session.create permissions
-            // are last to win vs agent rules, so read-only agents may lose
-            // their team tools. Log explicitly so it is never silent.
             console.warn(
-              "[ensemble] ctx.permission.rules unavailable on this host; skipped permission re-assert — read-only agents may lose team tools. Requires host with permission.rules support."
+              "[ensemble] permission.rules unavailable; rules were supplied at session creation. Effective permissions require host-specific verification."
             )
           }
         }
@@ -144,7 +147,13 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         // Synthetic (system) messages render as persistent transcript entries
         // instead of fake user turns — the native form for agent notifications.
         if (options.synthetic) {
-          return ctx.session.synthetic({ sessionID: options.sessionID, text: joinParts(options.parts), delivery: "queue" })
+          return ctx.session.synthetic({
+            sessionID: options.sessionID, text: joinParts(options.parts), delivery: "queue",
+            ...(options.notification ? {
+              id: options.notification.inboxId,
+              metadata: { ensemble: { teamId: options.notification.teamId, messageId: options.notification.messageId, notificationId: options.notification.inboxId } },
+            } : {}),
+          })
         }
         if (options.agent) {
           await ctx.session.switchAgent({ sessionID: options.sessionID, agent: options.agent })
@@ -161,7 +170,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const text = joinParts(options.parts)
         return ctx.session.prompt({ sessionID: options.sessionID, text, delivery: "queue" })
       },
-      abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID }),
+      abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID, resume: false }),
       status: async () => {
         const active = await ctx.session.active()
         const data: Record<string, { type: string }> = {}
@@ -194,25 +203,31 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
     worktree: {
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
-        const created = await ctx.worktree.create({ name })
-        const branch = (await gitBranch(created.directory)) ?? name
-        return { data: { name, branch, directory: created.directory } }
+        const created = await ctx.worktree.create({ projectID: projectID(), name })
+        try {
+          const branch = await establishBranch(created.directory, name)
+          return { data: { name, branch, directory: created.directory } }
+        } catch (error) {
+          // OQ-202: retain the returned checkout for reconciliation rather than
+          // deleting a directory/ref whose ownership or dirty state is unknown.
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Worktree retained at ${created.directory}; no shared-directory fallback is safe.`)
+        }
       },
       remove: async (options) => {
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
-        return ctx.worktree.remove({ directory, force: false })
+        return ctx.worktree.remove({ projectID: projectID(), directory, force: false })
       },
       list: async () => {
-        const entries = await ctx.worktree.list()
+        const entries = await ctx.worktree.list({ projectID: projectID() })
         return {
-          data: entries.map((entry) => ({
+          data: entries.filter(entry => entry.type !== "root" && entry.directory !== deps.projectDirectory).map((entry) => ({
             name: entry.directory.split("/").pop() ?? entry.directory,
             branch: "",
             directory: entry.directory,
           })),
         }
       },
-      reset: async () => ctx.worktree.refresh(),
+      reset: async () => ctx.worktree.refresh({ projectID: projectID() }),
     },
     workspace: {
       create: async (options) => {

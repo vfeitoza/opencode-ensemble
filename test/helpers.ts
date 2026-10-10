@@ -5,6 +5,7 @@ import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "../src
 import type { ToolDeps, PluginClient } from "../src/types"
 import { DEFAULT_CONFIG } from "../src/config"
 import { ProgressTracker } from "../src/progress"
+import { getTeamResourceParts, preservedBranchName } from "../src/tools/merge-helper"
 
 /** Create a fresh in-memory DB with migrations applied. */
 export function setupDb(): EnsembleDatabase {
@@ -21,6 +22,7 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
   return {
     calls,
     session: {
+      inbox: { list: async () => ({ data: [] }), cancel: async () => undefined },
       async create(options) {
         calls.push({ method: "session.create", args: [options] })
         return { data: { id: `mock-sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` } }
@@ -104,6 +106,14 @@ export function setupDeps(db?: EnsembleDatabase): ToolDeps & { client: ReturnTyp
     directory: "/tmp/test-project",
     config: { ...DEFAULT_CONFIG },
     progressTracker: new ProgressTracker(),
+    preserveMember: async (teamId, memberName) => {
+      const member = d.query("SELECT worktree_branch FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_branch: string | null } | null
+      if (!member?.worktree_branch) return null
+      const resource = getTeamResourceParts(d, teamId)
+      const ref = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, memberName)
+      d.run("UPDATE team_member SET worktree_branch=? WHERE team_id=? AND name=?", [ref, teamId, memberName])
+      return ref
+    },
   }
 }
 

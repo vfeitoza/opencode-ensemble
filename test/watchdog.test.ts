@@ -188,7 +188,7 @@ describe("Watchdog", () => {
         ["t1", "alice", "sess-a", pastTime, pastTime]
       )
 
-      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000, preserveMember: deps.preserveMember })
       await watchdog.cleanupStaleWorktrees()
 
       // worktree.remove should have been called
@@ -199,7 +199,7 @@ describe("Watchdog", () => {
       // DB should have worktree_dir NULLed
       const row = deps.db.query("SELECT worktree_dir, worktree_branch, workspace_id FROM team_member WHERE name = 'alice'").get() as Record<string, unknown>
       expect(row.worktree_dir).toBeNull()
-      expect(row.worktree_branch).toBeNull()
+      expect(row.worktree_branch).toContain("ensemble/preserved/")
     })
 
     test("does NOT clean up recently-updated shutdown members", async () => {
@@ -209,7 +209,7 @@ describe("Watchdog", () => {
         ["t1", "alice", "sess-a", now, now]
       )
 
-      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000, preserveMember: deps.preserveMember })
       await watchdog.cleanupStaleWorktrees()
 
       const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
@@ -226,7 +226,7 @@ describe("Watchdog", () => {
         ["t1", "bob", "sess-b", pastTime, pastTime]
       )
 
-      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000, preserveMember: deps.preserveMember })
       await watchdog.cleanupStaleWorktrees()
 
       // Both workspace.remove and worktree.remove should be called
@@ -240,7 +240,7 @@ describe("Watchdog", () => {
       // DB should have all three NULLed
       const row = deps.db.query("SELECT worktree_dir, worktree_branch, workspace_id FROM team_member WHERE name = 'bob'").get() as Record<string, unknown>
       expect(row.worktree_dir).toBeNull()
-      expect(row.worktree_branch).toBeNull()
+      expect(row.worktree_branch).toContain("ensemble/preserved/")
       expect(row.workspace_id).toBeNull()
     })
 

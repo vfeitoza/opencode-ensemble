@@ -4,9 +4,10 @@ import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { releaseMemberTasks } from "./tasks"
 import { getMemberModel } from "./member-model"
-import { preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
+import { teamResourceSegment } from "./tools/merge-helper"
 import { log } from "./log"
 import { runCommand } from "./process"
+import { preserveMemberHead } from "./member-preservation"
 
 /**
  * Whether a session still exists in OpenCode. `client.session.get` throws for a
@@ -128,14 +129,11 @@ export async function recoverStaleMembers(db: Database, client?: PluginClient, c
   if (client) {
     for (const member of stale) {
       // Preserve branch BEFORE abort — session.abort() may destroy the worktree + branch
-      if (cwd && member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-        const safeBranch = preservedBranchName(member.project_name, member.team_name, member.team_id, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, cwd)
-        if (ok) {
-          db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, member.team_id, member.name])
-          log(`recovery:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
-        }
+      try {
+        await preserveMemberHead(db, member.team_id, member.name, cwd ?? ".")
+      } catch (error) {
+        log(`recovery:abort-blocked name=${member.name} err=${error instanceof Error ? error.message : String(error)}`)
+        continue
       }
       try {
         await Promise.race([

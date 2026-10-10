@@ -1,10 +1,30 @@
 import type { SidebarTask } from "./tui-context"
 
+function cleanSidebarText(value: string): string {
+  // Deliberately remove terminal controls; dynamic construction avoids embedding
+  // literal control codepoints in the regex source checked by the linter.
+  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g")
+  return Array.from(value.replace(ansi, "")).map(point => {
+    const code = point.codePointAt(0) ?? 0
+    return code < 32 || (code >= 127 && code <= 159) ? " " : point
+  }).join("").replace(/\s+/g, " ").trim()
+}
+
+/** Bound sidebar task density independently of full task storage. */
+export function buildSidebarTasks(tasks: SidebarTask[], totalOpen: number): { rows: string[][]; hidden: number } {
+  const visible = tasks.slice(0, 5)
+  return { rows: visible.map(formatSidebarTask), hidden: Math.max(0, totalOpen - visible.length) }
+}
+
 /** Format an open task's state, description, and assignment for the sidebar. */
 export function formatSidebarTask(task: SidebarTask): string[] {
+  const clean = cleanSidebarText(task.content)
+  const points = Array.from(clean)
+  const content = points.length > 120 ? `${points.slice(0, 119).join("")}…` : clean
+  const owner = cleanSidebarText(task.assignee ?? "não atribuído")
   return [
-    `□ [${task.status}] ${task.content}`,
-    `  responsável: ${task.assignee ?? "não atribuído"}`,
+    `□ [${task.status}] ${content}`,
+    `  responsável: ${owner}`,
   ]
 }
 

@@ -249,6 +249,45 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+Task batches validate dependencies and insert under one immediate SQLite writer
+transaction. Dependencies must already exist in the current team before the
+call. A failed insert or writer-lock failure does not leave half of a batch;
+retry only after investigating the returned error.
+
+The terminal sidebar distinguishes loading, no-team, and reconnecting/error
+states. It synchronizes a missing session cache before selecting RPC location
+and discards late responses from previous sessions. Open tasks are limited to
+five rows and 120 Unicode codepoints per description, with an overflow count;
+full descriptions and boards remain available through tools and the dashboard.
+
+V2 lead notifications carry deterministic inbox IDs and Ensemble ownership
+metadata. Their delivery records survive team deletion so archive/purge can
+reconcile a host response that arrives late. The message body is still stored
+in the shared task/message database before the asynchronous wake is sent.
+
+Archive/purge closes notification admission and cancels only pending inbox items
+whose IDs are recorded as Ensemble-owned. Failed cancellation retains durable
+evidence and blocks purge for retry. Legacy notification-looking text alone
+is not proof of ownership: the preview reports it and leaves it untouched.
+On hosts without a native inbox context, the public CLI bridge must answer a
+per-instance RPC identity challenge before any inbox operation; mismatched or
+unavailable servers cannot be used to delete queued messages.
+
+Requested worktree isolation fails closed: if creation or branch establishment
+fails, the teammate does not start in the shared tree. Use `worktree: false`
+explicitly to share a directory. Read-only agents omit worktrees by default,
+but an explicit `worktree: true` is honored. Sessions are bound to the verified
+directory even if the legacy workspace bridge is unavailable. Shutdown and
+cleanup refresh preservation from the current HEAD; failure or uncommitted
+work blocks destructive removal.
+
+V2 worktree operations use the host project's ID, not Ensemble's directory-keyed
+project row. Newly created detached Git worktrees receive a verified named
+branch before the adapter reports success. Branch establishment failures retain
+the returned directory for investigation instead of guessing a branch name or
+deleting potentially unidentified work. The canonical checkout is excluded
+from worktree cleanup inventory.
+
 Configure the checkout as a local plugin in your project's `opencode.json` or `.opencode/opencode.json`:
 
 ```jsonc

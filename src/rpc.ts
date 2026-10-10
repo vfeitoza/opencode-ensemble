@@ -26,7 +26,7 @@ export const EnsembleRpc = Rpc.define({
     teamContext: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string" } },
+        properties: { sessionID: { type: "string" }, openTaskLimit: { type: "integer", minimum: 1, maximum: 5 } },
         required: ["sessionID"],
         additionalProperties: false,
       },
@@ -34,6 +34,7 @@ export const EnsembleRpc = Rpc.define({
         type: "object",
         properties: {
           team: { type: ["string", "null"] },
+          openTaskTotal: { type: "number" },
           members: {
             type: "array",
             items: {
