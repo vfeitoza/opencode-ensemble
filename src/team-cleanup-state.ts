@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto"
 import type { Database } from "./db"
 import { withImmediateTransaction } from "./db"
+import type { PluginClient } from "./types"
+import { log } from "./log"
 
 /** Durable cleanup ownership, independent of the team's operational status. */
 export interface CleanupOperation { teamId: string; id: string; revision: number }
@@ -77,4 +79,24 @@ export async function withSpawnAdmission<T>(db: Database, teamId: string, action
     db.run("INSERT INTO team_spawn_admission(id,team_id,owner_pid) VALUES(?,?,?)", [id, teamId, process.pid])
   })
   try { return await action() } finally { db.run("DELETE FROM team_spawn_admission WHERE id=?", [id]) }
+}
+
+/** Keep a durable admission until a fire-and-forget worker prompt settles. */
+export function deliverMemberPrompt(
+  db: Database, client: PluginClient, teamId: string,
+  options: Parameters<PluginClient["session"]["promptAsync"]>[0],
+  delivered?: () => void,
+): void {
+  const id = randomUUID()
+  withImmediateTransaction(db, () => {
+    assertTeamAcceptsWork(db, teamId)
+    if (db.query("SELECT team_id FROM team_operation_lock WHERE team_id=?").get(teamId)) throw new Error("Team lifecycle operation in progress; delivery blocked")
+    db.run("INSERT INTO team_spawn_admission(id,team_id,owner_pid) VALUES(?,?,?)", [id, teamId, process.pid])
+  })
+  const release = () => { db.run("DELETE FROM team_spawn_admission WHERE id=?", [id]) }
+  try {
+    client.session.promptAsync(options).then(() => { delivered?.() }).catch(error => {
+      log(`delivery:failed session=${options.sessionID} err=${String(error)}`)
+    }).finally(release)
+  } catch (error) { release(); throw error }
 }

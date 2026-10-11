@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { setupDb } from "./helpers"
-import { beginCleanup, blockCleanup, advanceCleanup, finishCleanup, assertTeamAcceptsWork, withTeamOperation } from "../src/team-cleanup-state"
+import { beginCleanup, blockCleanup, advanceCleanup, finishCleanup, assertTeamAcceptsWork, withTeamOperation, deliverMemberPrompt } from "../src/team-cleanup-state"
+import { setupDeps } from "./helpers"
 
 test("cleanup CAS excludes concurrent operations and blocked phases are retryable", () => {
   const db = setupDb()
@@ -40,4 +41,16 @@ test("an admission from a terminated process does not permanently block lifecycl
   await expect(withTeamOperation(db, ["team"], async () => "recovered")).resolves.toBe("recovered")
   expect(db.query("SELECT id FROM team_spawn_admission").all()).toEqual([])
   db.close()
+})
+
+test("an in-flight member delivery blocks destructive lifecycle until it settles", async () => {
+  const deps = setupDeps()
+  let finish: () => void = () => undefined
+  deps.client.session.promptAsync = () => new Promise(resolve => { finish = () => resolve({}) })
+  deliverMemberPrompt(deps.db, deps.client, "team", { sessionID: "worker", parts: [{ type: "text", text: "work" }] })
+  await expect(withTeamOperation(deps.db, ["team"], async () => undefined)).rejects.toThrow("pending spawn admissions")
+  finish()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await expect(withTeamOperation(deps.db, ["team"], async () => "ok")).resolves.toBe("ok")
+  deps.db.close()
 })
