@@ -42,7 +42,7 @@ function applyNavCollapse(){
 function render(){
   rSel();const t=cur();
   const empty=document.getElementById('empty'),content=document.getElementById('content');
-  if(!t){empty.classList.remove('hidden');empty.classList.add('flex');content.classList.add('hidden');document.getElementById('tl').classList.add('hidden');return}
+  if(!t){empty.classList.remove('hidden');empty.classList.add('flex');content.classList.toggle('hidden',!allProjects().length);document.getElementById('attention').textContent='';document.getElementById('agents').textContent='';document.getElementById('tasks').textContent='';document.getElementById('activity').textContent='';document.getElementById('sum').textContent='';document.getElementById('crumb').textContent='';document.getElementById('tl').classList.add('hidden');return}
   empty.classList.add('hidden');empty.classList.remove('flex');content.classList.remove('hidden');
   applyNavCollapse();
   const p=curProject();document.getElementById('crumb').textContent=p?' / '+projectLabel(p)+' / '+t.name:'';
@@ -107,6 +107,7 @@ document.addEventListener('click',function(e){
 
 // Keyboard shortcuts
 document.addEventListener('keydown',function(e){
+  if(document.getElementById('project-removal').open)return;
   const shortcutsOpen=document.getElementById('sco').classList.contains('show');
   if(shortcutsOpen&&e.key==='Tab'){trapFocus(document.getElementById('sco'),e);return}
   if(shortcutsOpen&&e.key==='Escape'){e.preventDefault();closeShortcuts();return}

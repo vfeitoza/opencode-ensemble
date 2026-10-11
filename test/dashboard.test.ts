@@ -204,6 +204,7 @@ describe("dashboard", () => {
       expect(projects.map(project => ({ id: project.id, activeTeams: project.activeTeams, workingAgents: project.workingAgents }))).toEqual([
         { id: "/tmp/project-a", activeTeams: 1, workingAgents: 1 },
         { id: "/tmp/project-b", activeTeams: 1, workingAgents: 0 },
+        { id: "/tmp/test-project", activeTeams: 0, workingAgents: 0 },
       ])
       expect(body.teams.map(team => team.projectId).sort()).toEqual(["/tmp/project-a", "/tmp/project-b"])
     })

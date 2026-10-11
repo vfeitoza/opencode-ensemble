@@ -5,12 +5,16 @@ import { DASHBOARD_HEAD } from "./dashboard-html"
 import { DASHBOARD_JS_CORE } from "./dashboard-js-core"
 import { DASHBOARD_JS_EVENTS } from "./dashboard-js-events"
 import { DASHBOARD_JS_RENDER } from "./dashboard-js-render"
+import { DASHBOARD_JS_PROJECT_REMOVAL } from "./dashboard-js-project-removal"
 import { log } from "./log"
 import type { ActivityBuffer, ActivityEntry } from "./activity"
 import type { PluginClient } from "./types"
+import type { MemberRegistry } from "./state"
+import { randomUUID } from "node:crypto"
+import { createProjectRemoval, ProjectRemovalError } from "./project-removal"
 
 /** Assemble the full dashboard HTML from parts. */
-const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_CORE + DASHBOARD_JS_RENDER + DASHBOARD_JS_EVENTS + "<\/script>\n</body></html>"
+const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_CORE + DASHBOARD_JS_RENDER + DASHBOARD_JS_PROJECT_REMOVAL + DASHBOARD_JS_EVENTS + "<\/script>\n</body></html>"
 
 interface TeamRow {
   id: string
@@ -180,7 +184,7 @@ function buildState(db: Database): EnsembleDashboardState {
     version: ENSEMBLE_STATE_VERSION,
     projects: projects.flatMap(project => {
       const projectTeams = teamsByProject.get(project.id) ?? []
-      if (projectTeams.length === 0) return []
+      if (project.id === "default" && projectTeams.length === 0) return []
       return {
         id: project.id,
         name: project.name,
@@ -211,6 +215,8 @@ export interface DashboardOptions {
   activityBuffer?: ActivityBuffer
   /** SDK client for on-demand session message retrieval. */
   client?: PluginClient
+  /** Remove stale local member registrations only after committed project deletion. */
+  registry?: MemberRegistry
 }
 
 function sendJson(res: ServerResponse, data: unknown): void {
@@ -328,14 +334,53 @@ async function handleActivityRoute(
   sendJson(res, { activity: combined, session: sessionData })
 }
 
+async function handleProjectRemoval(req: IncomingMessage, res: ServerResponse, route: string, service: ReturnType<typeof createProjectRemoval>): Promise<void> {
+  if (req.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new ProjectRemovalError(415, "Use application/json")
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > 16_384) throw new ProjectRemovalError(413, "Request too large")
+    chunks.push(buffer)
+  }
+  let value: unknown
+  try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")) } catch { throw new ProjectRemovalError(400, "Invalid JSON") }
+  if (!value || typeof value !== "object" || !("projectId" in value) || typeof value.projectId !== "string" || !value.projectId.length || value.projectId.length > 4096) throw new ProjectRemovalError(400, "A valid projectId is required")
+  const result = route.endsWith("removal-preview") ? await service.preview(value.projectId) : await (() => {
+    if (!("token" in value) || typeof value.token !== "string" || !("name" in value) || typeof value.name !== "string") throw new ProjectRemovalError(400, "Confirmation token and project name are required")
+    return service.remove(value.projectId, { token: value.token, name: value.name })
+  })()
+  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" })
+  res.end(JSON.stringify(result))
+}
+
 function handleDashboardRequest(
   db: Database,
   port: number,
   req: IncomingMessage,
   res: ServerResponse,
   options?: DashboardOptions,
+  writes?: { token: string; service: ReturnType<typeof createProjectRemoval> },
 ): void {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `localhost:${port}`}`)
+
+  if (url.pathname === "/api/projects/removal-preview" || url.pathname === "/api/projects/remove") {
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end(); return }
+    const host = req.headers.host
+    const allowedHosts = [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]
+    const localPeer = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")
+    if (!writes || !localPeer || !allowedHosts.includes(host ?? "") || req.headers["x-ensemble-token"] !== writes.token || (req.headers.origin && req.headers.origin !== `http://${host}`) || req.headers["sec-fetch-site"] === "cross-site") {
+      res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Project removal requires the local dashboard and a same-origin confirmation." })); return
+    }
+    void handleProjectRemoval(req, res, url.pathname, writes.service).catch(error => {
+      if (res.headersSent) return
+      const status = error instanceof ProjectRemovalError ? error.status : 409
+      res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" })
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Project removal failed; retained history is still available." }))
+    })
+    return
+  }
 
   if (url.pathname === "/api/health") {
     sendJson(res, { ensemble: true, pid: process.pid })
@@ -360,8 +405,8 @@ function handleDashboardRequest(
   }
 
   if (url.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/html" })
-    res.end(DASHBOARD_HTML)
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" })
+    res.end(DASHBOARD_HTML.replace("<head>", `<head><meta name="ensemble-write-token" content="${writes?.token ?? ""}">`))
     return
   }
 
@@ -393,7 +438,8 @@ function toDashboardServer(server: Server): DashboardServer {
  */
 export async function startDashboard(db: Database, port: number, options?: DashboardOptions): Promise<DashboardServer | null> {
   return new Promise((resolve) => {
-    const server = createServer((req, res) => handleDashboardRequest(db, port, req, res, options))
+    const writes = { token: randomUUID(), service: createProjectRemoval(db, options) }
+    const server = createServer((req, res) => handleDashboardRequest(db, port, req, res, options, writes))
 
     server.once("error", async (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
