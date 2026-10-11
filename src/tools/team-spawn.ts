@@ -9,6 +9,7 @@ import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
 import { preserveMemberWork } from "../member-preservation"
 import { inspectWorktreeIdentity, type WorktreeIdentity } from "../v2-worktree"
+import { assertTeamAcceptsWork } from "../team-cleanup-state"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -72,6 +73,7 @@ export async function executeTeamSpawn(
   if (nameError) throw new Error(nameError)
 
   const teamInfo = requireLead(deps, sessionId)
+  assertTeamAcceptsWork(deps.db, teamInfo.teamId)
 
   // Circuit breaker — stop retrying after 3 consecutive failures
   const failures = spawnFailures.get(teamInfo.teamId)

@@ -5,6 +5,7 @@ import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { parseModelId, getMemberModel } from "../member-model"
 import { log } from "../log"
 import { queueTeamWake } from "../notifications"
+import { assertTeamAcceptsWork } from "../team-cleanup-state"
 
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
@@ -21,6 +22,7 @@ export async function executeTeamMessage(
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  if (args.to !== "lead") assertTeamAcceptsWork(deps.db, teamInfo.teamId)
 
   if (args.force && teamInfo.role !== "lead") {
     throw new Error("Only the lead can force-deliver a message to a completed teammate.")

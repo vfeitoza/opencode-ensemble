@@ -9,6 +9,7 @@ import { runCommand } from "../process"
 import { preserveMemberWork } from "../member-preservation"
 import { closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../notifications"
 import { stopAndPreserveMember, memberExecution } from "../member-stop"
+import { beginCleanup, advanceCleanup, blockCleanup, finishCleanup } from "../team-cleanup-state"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -427,6 +428,14 @@ export async function executeTeamCleanup(
     const targets = resolvePurgeTargets(deps, args.purge)
     if (targets.length === 0) return "No archived teams to purge."
 
+    for (const target of targets) {
+      const sessions = deps.db.query("SELECT name,session_id FROM team_member WHERE team_id=?").all(target.id) as Array<{ name: string; session_id: string }>
+      for (const member of sessions) {
+        const execution = await memberExecution(deps, member.session_id)
+        if (execution !== "idle" && execution !== "missing") throw new Error(`Cannot purge ${target.name}: ${member.name} is not confirmed stopped (${member.session_id})`)
+      }
+    }
+
     validatePurgeTargetsStillArchived(deps, targets)
     validatePurgeResources(deps, targets)
     const branchesByTeam = await collectPreservedBranches(targets, deps.directory, _listBranches ?? listPreservedBranches)
@@ -464,6 +473,8 @@ export async function executeTeamCleanup(
   }
 
   const teamInfo = requireLead(deps, sessionId)
+  const operation = beginCleanup(deps.db, teamInfo.teamId)
+  try {
 
   const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id FROM team_member WHERE team_id = ?")
     .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null }>
@@ -490,6 +501,7 @@ export async function executeTeamCleanup(
       }
     }
     if (dirty.length > 0) {
+      blockCleanup(deps.db, operation, new Error("Uncommitted worker changes"))
       const warnings = dirty.map(d => `  - ${d.name} (branch: ${d.branch})`).join("\n")
       return `Warning: ${dirty.length} teammate(s) have uncommitted changes in their worktrees:\n${warnings}\n\nCommit or merge their work first, then call team_cleanup with acknowledge_uncommitted: true to proceed.`
     }
@@ -505,14 +517,9 @@ export async function executeTeamCleanup(
     if (member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
   }
   closeTeamNotifications(deps.db, teamInfo.teamId)
-  try {
-    await cancelTeamNotifications(deps.client, deps.db, teamInfo.teamId)
-  } catch (error) {
-    // Keep durable cancellation evidence and an archived target for explicit retry.
-    deps.db.run("UPDATE team SET status='archived',time_updated=? WHERE id=?", [Date.now(), teamInfo.teamId])
-    deps.registry.unregisterTeam(teamInfo.teamId)
-    throw new Error(`Team archived but inbox cancellation incomplete; purge blocked: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  advanceCleanup(deps.db, operation, "cancelling")
+  await cancelTeamNotifications(deps.client, deps.db, teamInfo.teamId)
+  advanceCleanup(deps.db, operation, "removing")
 
   // Safety net: merge any remaining unmerged preserved branches
   for (const member of members) {
@@ -534,7 +541,7 @@ export async function executeTeamCleanup(
         if (overlap.length > 0) {
           overlapWarnings.push(`${member.name}: ${overlap.join(", ")}`)
         }
-      } catch { /* best effort */ }
+      } catch { /* overlap detection retains its existing best-effort policy */ }
       const result = await merge(branch, deps.directory)
       if (result.ok) {
         await delBranch(branch, deps.directory)
@@ -555,13 +562,13 @@ export async function executeTeamCleanup(
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
         deps.db.run("UPDATE team_member SET workspace_id = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort */ }
+      } catch (error) { throw new Error(`Workspace removal failed for ${member.name}: ${String(error)}`) }
     }
     if (member.worktree_dir) {
       try {
         await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort */ }
+      } catch (error) { throw new Error(`Worktree removal failed for ${member.name}: ${String(error)}`) }
     }
   }
 
@@ -584,5 +591,10 @@ export async function executeTeamCleanup(
   if (overlapWarnings.length > 0) {
     parts.push(`Warning: safety-net merge overwrote local changes to overlapping files:\n${overlapWarnings.map(w => `  - ${w}`).join("\n")}\nReview with: git diff`)
   }
+  finishCleanup(deps.db, operation)
   return parts.join("\n")
+  } catch (error) {
+    blockCleanup(deps.db, operation, error)
+    throw error
+  }
 }

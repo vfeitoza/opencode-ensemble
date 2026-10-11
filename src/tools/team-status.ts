@@ -66,6 +66,8 @@ export async function executeTeamStatus(
 
   const lines: string[] = []
   lines.push(`Team: ${teamInfo.teamName} (you are the ${teamInfo.role})`)
+  const cleanup = deps.db.query("SELECT phase,last_error FROM team_cleanup_state WHERE team_id=?").get(teamInfo.teamId) as { phase: string; last_error: string | null } | null
+  if (cleanup) lines.push(`Cleanup: ${cleanup.phase}${cleanup.last_error ? ` — ${cleanup.last_error}` : ""}`)
   lines.push("")
 
   if (members.length === 0) {

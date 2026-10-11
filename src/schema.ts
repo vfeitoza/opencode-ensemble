@@ -231,6 +231,7 @@ export const MIGRATIONS: string[] = [
    CREATE TABLE team_notification_scope(team_id TEXT PRIMARY KEY,closed_at INTEGER NOT NULL);`,
   `ALTER TABLE team_member ADD COLUMN worktree_identity TEXT;
    ALTER TABLE team_spawn_resource ADD COLUMN worktree_identity TEXT;`,
+  `CREATE TABLE team_cleanup_state (team_id TEXT PRIMARY KEY,phase TEXT NOT NULL,operation_id TEXT,owner_pid INTEGER,revision INTEGER NOT NULL DEFAULT 0,last_error TEXT,time_updated INTEGER NOT NULL);`,
 ]
 
 /**

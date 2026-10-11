@@ -278,6 +278,20 @@ describe("team_shutdown", () => {
 })
 
 describe("team_cleanup", () => {
+  test("inbox failure keeps team controllable instead of archiving and unregistering", async () => {
+    const isolated = setupDeps()
+    insertTeam(isolated.db, "retry-team", "retry-team", "retry-lead")
+    insertMember(isolated.db, "retry-team", "worker", "retry-worker", "busy", "running")
+    isolated.registry.register("retry-team", "worker", "retry-worker")
+    isolated.db.run("INSERT INTO team_notification(id,team_id,message_id,session_id,state,time_created,time_updated) VALUES('msg_owned','retry-team','message','retry-lead','admitted',0,0)")
+    isolated.client.session.inbox = { list: async () => { throw new Error("HTTP 500") }, cancel: async () => undefined }
+    await expect(executeTeamCleanup(isolated, { force: true }, "retry-lead", undefined, noopMerge, noopDelete, false)).rejects.toThrow("HTTP 500")
+    expect(isolated.db.query("SELECT status FROM team WHERE id='retry-team'").get()).toMatchObject({ status: "active" })
+    expect(isolated.registry.getBySession("retry-worker")).toBeDefined()
+    expect(isolated.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    isolated.client.session.inbox = { list: async () => ({ data: [] }), cancel: async () => undefined }
+    expect(await executeTeamCleanup(isolated, { force: true }, "retry-lead", undefined, noopMerge, noopDelete, false)).toContain("cleaned up")
+  })
   test("shutdown_requested worker cannot be removed before confirmed idle", async () => {
     const isolated = setupDeps()
     insertTeam(isolated.db, "stop-team", "stop-team", "stop-lead")
@@ -395,7 +409,7 @@ describe("team_cleanup", () => {
     expect(removeCalls).toHaveLength(1)
   })
 
-  test("cleanup continues if worktree removal fails", async () => {
+  test("cleanup remains retryable if worktree removal fails", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice"])
@@ -403,8 +417,8 @@ describe("team_cleanup", () => {
 
     deps.client.worktree.remove = async () => { throw new Error("worktree gone") }
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("Worktree removal failed")
+    expect(deps.db.query("SELECT status FROM team WHERE id='t1'").get()).toMatchObject({ status: "active" })
   })
 
   test("cleanup with no worktrees does not mention branches", async () => {
@@ -452,7 +466,7 @@ describe("team_cleanup", () => {
     expect(row.workspace_id).toBeNull()
   })
 
-  test("cleanup continues if workspace.remove fails", async () => {
+  test("cleanup remains retryable if workspace.remove fails", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
@@ -460,8 +474,8 @@ describe("team_cleanup", () => {
 
     deps.client.workspace.remove = async () => { throw new Error("workspace gone") }
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("Workspace removal failed")
+    expect(deps.registry.getBySession("sess-alice")).toBeDefined()
   })
 
   test("cleanup lists multiple branches when multiple members have worktrees", async () => {
