@@ -37,6 +37,15 @@ export function wrapThrowingClient(raw: unknown): PluginClient {
   return {
     session: {
       notificationMode: "legacy",
+      nonDestructiveInterrupt: false,
+      execution: async ({ sessionID }: { sessionID: string }) => {
+        try {
+          await throwing(r.session.get.bind(r.session))({ sessionID })
+          const result = await throwing(r.session.status.bind(r.session))() as { data?: Record<string, { type: string }> }
+          if (!result.data) return "unknown"
+          return result.data[sessionID]?.type === "busy" || result.data[sessionID]?.type === "retry" ? "running" : "idle"
+        } catch { return "unknown" }
+      },
       create: throwing(r.session.create.bind(r.session)),
       promptAsync: throwing(async (...args: unknown[]) => {
         const options = args[0] as Record<string, unknown>

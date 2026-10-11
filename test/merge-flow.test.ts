@@ -53,7 +53,7 @@ describe("branch preservation", () => {
     let preserveTarget = ""
     const trackPreserve: PreserveBranchFn = async (src, target) => {
       preserveCalled = true
-      preserveSource = src
+      if (!preserveSource) preserveSource = src
       preserveTarget = target
       return true
     }
@@ -124,7 +124,7 @@ describe("branch preservation", () => {
     await executeTeamShutdown(deps, { member: "dave" }, lead, undefined, trackPreserve)
 
     // Preserve MUST happen before abort
-    expect(callOrder).toEqual(["preserve", "abort"])
+    expect(callOrder).toEqual(["preserve", "abort", "preserve"])
   })
 
   test("force shutdown also preserves branch", async () => {

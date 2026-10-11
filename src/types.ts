@@ -39,6 +39,10 @@ export interface PermissionRule {
  */
 export interface PluginClient {
   session: {
+    /** Execution confirmation: unknown must never authorize resource removal. */
+    execution?(options: { sessionID: string }): Promise<"running" | "idle" | "missing" | "unknown">
+    /** True only when this host's interrupt preserves the checkout for final HEAD capture. */
+    nonDestructiveInterrupt?: boolean
     /** V1 has no persistent synthetic inbox; preserve its original notification behavior. */
     notificationMode?: "legacy" | "queued"
     /** Optional V2 host inbox capability; never implemented with unauthenticated guessed URLs. */

@@ -14,6 +14,7 @@ export interface V2Context {
     move?(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
     active(): Promise<Record<string, { type: string }>>
+    wait?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
     synthetic(input: Record<string, unknown>): Promise<unknown>
   }
   worktree: {
@@ -92,6 +93,27 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
   }
   return {
     session: {
+      nonDestructiveInterrupt: true,
+      execution: async ({ sessionID }) => {
+        try {
+          await ctx.session.get({ sessionID })
+          if (typeof ctx.session.active === "function") {
+            const active = await ctx.session.active()
+            return active[sessionID] ? "running" : "idle"
+          }
+          if (!ctx.session.wait) return "unknown"
+          const controller = new AbortController()
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            return await Promise.race([
+              ctx.session.wait({ sessionID }, { signal: controller.signal }).then(() => "idle" as const),
+              new Promise<"unknown">(resolve => { timer = setTimeout(() => resolve("unknown"), 1500) }),
+            ])
+          } finally { if (timer) clearTimeout(timer); controller.abort() }
+        } catch (error) {
+          return error && typeof error === "object" && "_tag" in error && error._tag === "SessionNotFoundError" ? "missing" : "unknown"
+        }
+      },
       ...((ctx.session.inbox ?? deps.inbox) ? { inbox: ctx.session.inbox ?? deps.inbox } : {}),
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }

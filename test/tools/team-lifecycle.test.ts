@@ -169,6 +169,7 @@ describe("team_shutdown", () => {
       return { data: { "sess-alice": { type: "idle" } } }
     }
     deps.client.session.abort = async () => { throw new Error("session gone") }
+    deps.client.session.execution = async () => "missing"
 
     const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", undefined, noopPreserve)
     // Should still transition to shutdown since member was idle
@@ -190,6 +191,9 @@ describe("team_shutdown", () => {
   })
 
   test("busy member with force=true aborts immediately, no promptAsync", async () => {
+    let running = true
+    deps.client.session.execution = async () => running ? "running" : "idle"
+    deps.client.session.abort = async options => { deps.client.calls.push({ method: "session.abort", args: [options] }); running = false }
     deps.client.session.status = async () => {
       deps.client.calls.push({ method: "session.status", args: [] })
       return { data: { "sess-alice": { type: "busy" } } }
@@ -274,6 +278,17 @@ describe("team_shutdown", () => {
 })
 
 describe("team_cleanup", () => {
+  test("shutdown_requested worker cannot be removed before confirmed idle", async () => {
+    const isolated = setupDeps()
+    insertTeam(isolated.db, "stop-team", "stop-team", "stop-lead")
+    insertMember(isolated.db, "stop-team", "worker", "stop-worker", "shutdown_requested")
+    isolated.registry.register("stop-team", "worker", "stop-worker")
+    isolated.client.session.status = async () => ({ data: { "stop-worker": { type: "busy" } } })
+    isolated.db.run("UPDATE team_member SET worktree_dir='/owned-worker' WHERE team_id='stop-team'")
+    await expect(executeTeamCleanup(isolated, { force: false }, "stop-lead", async () => false, noopMerge, noopDelete, false)).rejects.toThrow()
+    expect(isolated.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    expect(isolated.db.query("SELECT status FROM team WHERE id='stop-team'").get()).toMatchObject({ status: "active" })
+  })
   let deps: ReturnType<typeof setupDeps>
 
   beforeEach(() => {
@@ -309,6 +324,10 @@ describe("team_cleanup", () => {
     deps.registry.register("t1", "alice", "sess-alice")
     deps.registry.register("t1", "bob", "sess-bob")
 
+    let aliceRunning = true
+    deps.client.session.execution = async ({ sessionID }) => sessionID === "sess-alice" && aliceRunning ? "running" : "idle"
+    deps.client.session.abort = async options => { deps.client.calls.push({ method: "session.abort", args: [options] }); aliceRunning = false; return {} }
+
     const result = await executeTeamCleanup(deps, { force: true }, "lead-sess", undefined, noopMerge, noopDelete, false)
     expect(result).toContain("cleaned up")
 
@@ -340,15 +359,14 @@ describe("team_cleanup", () => {
     expect(team.status).toBe("archived")
   })
 
-  test("treats shutdown_requested members as inactive (cleanup succeeds without force)", async () => {
+  test("shutdown_requested is not accepted as a completed shutdown without force", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown_requested", "idle")
     deps.registry.register("t1", "alice", "sess-alice")
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("still active")
 
     const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
-    expect(team.status).toBe("archived")
+    expect(team.status).toBe("active")
   })
 
   test("treats error members as inactive (cleanup succeeds without force)", async () => {

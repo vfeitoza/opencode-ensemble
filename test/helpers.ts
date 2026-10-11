@@ -22,6 +22,11 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
   return {
     calls,
     session: {
+      nonDestructiveInterrupt: true,
+      async execution(options) {
+        const statuses = await this.status()
+        return statuses.data?.[options.sessionID]?.type === "busy" ? "running" : "idle"
+      },
       inbox: { list: async () => ({ data: [] }), cancel: async () => undefined },
       async create(options) {
         calls.push({ method: "session.create", args: [options] })

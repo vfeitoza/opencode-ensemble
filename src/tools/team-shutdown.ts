@@ -6,6 +6,7 @@ import type { PreserveBranchFn } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
 import { preserveMemberHead } from "../member-preservation"
+import { memberExecution } from "../member-stop"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
@@ -100,11 +101,16 @@ async function preserveAndAbort(
   })
 
   // Now safe to abort — the branch is preserved
+  const before = await memberExecution(deps, sessionId)
+  if (before === "unknown" || (before === "running" && !deps.client.session.nonDestructiveInterrupt)) throw new Error(`Cannot safely confirm shutdown of ${memberName}; resources retained`)
   try {
     await deps.client.session.abort({ sessionID: sessionId })
-  } catch {
-    // Abort failed — session may already be gone
+  } catch (error) {
+    if (await memberExecution(deps, sessionId) !== "missing") throw error
   }
+  const after = await memberExecution(deps, sessionId)
+  if (after !== "idle" && after !== "missing") throw new Error(`Member ${memberName} has not stopped; resources retained`)
+  await preserveMemberHead(deps.db, teamId, memberName, deps.directory, { ...(preserve !== preserveBranch ? { preserve } : {}) })
 
   deps.db.run(
     "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",

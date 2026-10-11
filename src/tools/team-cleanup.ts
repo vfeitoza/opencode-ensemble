@@ -8,6 +8,7 @@ import { log } from "../log"
 import { runCommand } from "../process"
 import { preserveMemberWork } from "../member-preservation"
 import { closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../notifications"
+import { stopAndPreserveMember, memberExecution } from "../member-stop"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -467,7 +468,7 @@ export async function executeTeamCleanup(
   const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id FROM team_member WHERE team_id = ?")
     .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null }>
 
-  const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
+  const active = members.filter(m => m.status !== "shutdown" && m.status !== "error")
 
   if (active.length > 0 && !args.force) {
     const names = active.map(m => m.name).join(", ")
@@ -495,6 +496,10 @@ export async function executeTeamCleanup(
   }
 
   // Force-abort active members — preserve branches BEFORE aborting
+  for (const member of members) {
+    const stopped = await stopAndPreserveMember(deps, teamInfo.teamId, member.name, { force: args.force })
+    if (member.worktree_branch) member.worktree_branch = stopped.ref
+  }
   // Preserve every owned checkout before closing admission or removing anything.
   for (const member of members) {
     if (member.worktree_branch) member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
@@ -507,15 +512,6 @@ export async function executeTeamCleanup(
     deps.db.run("UPDATE team SET status='archived',time_updated=? WHERE id=?", [Date.now(), teamInfo.teamId])
     deps.registry.unregisterTeam(teamInfo.teamId)
     throw new Error(`Team archived but inbox cancellation incomplete; purge blocked: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  if (args.force) {
-    for (const member of active) {
-      // Preserve branch before abort — session.abort() may destroy the worktree + branch
-      member.worktree_branch = await preserveMemberWork(deps, teamInfo.teamId, member.name)
-      try {
-        await deps.client.session.abort({ sessionID: member.session_id })
-      } catch { /* best effort */ }
-    }
   }
 
   // Safety net: merge any remaining unmerged preserved branches
@@ -553,6 +549,8 @@ export async function executeTeamCleanup(
 
   // Remove workspaces and worktrees
   for (const member of members) {
+    const execution = await memberExecution(deps, member.session_id)
+    if (execution !== "idle" && execution !== "missing") throw new Error(`Member ${member.name} is not confirmed stopped; resource removal blocked`)
     if (member.workspace_id) {
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
