@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamShutdown } from "../../src/tools/team-shutdown"
 import { executeTeamCleanup } from "../../src/tools/team-cleanup"
+import { executeTeamBroadcast } from "../../src/tools/team-broadcast"
 import type { MergeBranchFn, DeleteBranchFn } from "../../src/tools/merge-helper"
 
 /** Noop merge fn for tests that don't need real git. */
@@ -278,6 +279,35 @@ describe("team_shutdown", () => {
 })
 
 describe("team_cleanup", () => {
+  test("purge refuses a legacy checkout lacking captured identity before removal", async () => {
+    const d = setupDeps()
+    delete d.preserveMember
+    insertTeam(d.db, "purge-identity", "legacy", "lead-legacy", "archived")
+    insertMember(d.db, "purge-identity", "worker", "session-legacy", "shutdown")
+    d.db.run("UPDATE team_member SET worktree_dir='/unverified-checkout' WHERE team_id='purge-identity'")
+    d.client.worktree.list = async () => ({ data: [{ name: "ensemble-legacy", branch: "", directory: "/unverified-checkout" }] })
+    const token = await preparePurgeConfirmation(d, ["legacy"])
+    await expect(executeTeamCleanup(d, { force: false, purge: ["legacy"], confirm_purge: true, confirm_token: token }, "main-sess", async () => false, noopMerge, noopDelete, false, undefined, undefined, noopListBranches)).rejects.toThrow("identity missing")
+    expect(d.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    expect(d.db.query("SELECT id FROM team WHERE id='purge-identity'").get()).toBeTruthy()
+  })
+  test("broadcast cannot reactivate a stopped worker during workspace removal", async () => {
+    const d = setupDeps()
+    insertTeam(d.db, "race", "race", "lead-race")
+    insertMember(d.db, "race", "worker", "session-race", "shutdown")
+    d.registry.register("race", "worker", "session-race")
+    d.db.run("UPDATE team_member SET workspace_id='ws',worktree_dir='/owned' WHERE team_id='race'")
+    let running = false
+    d.client.session.execution = async () => running ? "running" : "idle"
+    d.client.session.promptAsync = async () => { running = true }
+    d.client.workspace.remove = async () => {
+      try { await executeTeamBroadcast(d, { text: "start again" }, "lead-race") } catch { /* expected admission refusal */ }
+    }
+    let removedWhileRunning = false
+    d.client.worktree.remove = async () => { removedWhileRunning = running }
+    await executeTeamCleanup(d, { force: false }, "lead-race", async () => false, noopMerge, noopDelete, false)
+    expect(removedWhileRunning).toBe(false)
+  })
   test("inbox failure keeps team controllable instead of archiving and unregistering", async () => {
     const isolated = setupDeps()
     insertTeam(isolated.db, "retry-team", "retry-team", "retry-lead")

@@ -88,6 +88,9 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   column stays the source of truth and is still nulled by cleanup.
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
+  // The installed Promise adapter ignores wait's request-options argument.
+  // Share one waiter per session instead of accumulating abandoned waits.
+  const idleWaits = new Map<string, Promise<"idle">>()
   const establishBranch = deps.ensureBranch ?? ensureWorktreeBranch
   const projectID = (): string => {
     if (!deps.projectID) throw new Error("V2 worktree operations require the host projectID")
@@ -104,14 +107,18 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
             return active[sessionID] ? "running" : "idle"
           }
           if (!ctx.session.wait) return "unknown"
-          const controller = new AbortController()
           let timer: ReturnType<typeof setTimeout> | undefined
           try {
+            let waiter = idleWaits.get(sessionID)
+            if (!waiter) {
+              waiter = ctx.session.wait({ sessionID }).then(() => "idle" as const).finally(() => { idleWaits.delete(sessionID) })
+              idleWaits.set(sessionID, waiter)
+            }
             return await Promise.race([
-              ctx.session.wait({ sessionID }, { signal: controller.signal }).then(() => "idle" as const),
+              waiter,
               new Promise<"unknown">(resolve => { timer = setTimeout(() => resolve("unknown"), 1500) }),
             ])
-          } finally { if (timer) clearTimeout(timer); controller.abort() }
+          } finally { if (timer) clearTimeout(timer) }
         } catch (error) {
           return error && typeof error === "object" && "_tag" in error && error._tag === "SessionNotFoundError" ? "missing" : "unknown"
         }

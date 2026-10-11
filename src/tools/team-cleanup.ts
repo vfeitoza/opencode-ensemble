@@ -33,6 +33,7 @@ interface PurgeStats extends PurgeTarget {
 }
 
 interface PurgeMemberResource {
+  session_id: string
   team_id: string
   team_name: string
   project_name: string
@@ -128,7 +129,8 @@ function getPurgeMemberResources(deps: ToolDeps, targets: PurgeTarget[]): PurgeM
   return targets.flatMap(target => deps.db.query(
     `SELECT t.name as team_name,
             p.name as project_name,
-            tm.team_id,
+             tm.team_id,
+             tm.session_id,
             tm.name as member_name,
             tm.worktree_dir,
             tm.workspace_id,
@@ -253,8 +255,14 @@ async function cleanupStalePurgeResources(deps: ToolDeps, targets: PurgeTarget[]
   const workspaceIds = await existingWorkspaceIds(deps, resources)
 
   for (const resource of resources) {
+    const verifyResource = async (): Promise<void> => {
+      const execution = await memberExecution(deps, resource.session_id)
+      if (execution !== "idle" && execution !== "missing") throw new Error(`Member ${resource.member_name} is not confirmed stopped; purge removal blocked`)
+      if (resource.worktree_dir && worktreeDirs.has(resource.worktree_dir) && !deps.preserveMember) await verifyMemberCheckout(deps.db, resource.team_id, resource.member_name, deps.directory)
+    }
     if (resource.workspace_id) {
       if (workspaceIds.has(resource.workspace_id)) {
+        await verifyResource()
         try {
           await deps.client.workspace.remove({ id: resource.workspace_id })
         } catch (err) {
@@ -278,6 +286,7 @@ async function cleanupStalePurgeResources(deps: ToolDeps, targets: PurgeTarget[]
           throw new Error(`Cannot purge archived teams: ${resource.team_name}/${resource.member_name} has uncommitted changes in archived worktree ${resource.worktree_dir}.`)
         }
         try {
+          await verifyResource()
           await deps.client.worktree.remove({ worktreeRemoveInput: { directory: resource.worktree_dir } })
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
@@ -510,7 +519,7 @@ async function cleanupTeam(
   // Force-abort active members — preserve branches BEFORE aborting
   for (const member of members) {
     const stopped = await stopAndPreserveMember(deps, teamInfo.teamId, member.name, { force: args.force })
-    if (member.worktree_branch) member.worktree_branch = stopped.ref
+    member.worktree_branch = stopped.ref
   }
   // Preserve every owned checkout before closing admission or removing anything.
   for (const member of members) {
@@ -544,8 +553,10 @@ async function cleanupTeam(
       } catch { /* overlap detection retains its existing best-effort policy */ }
       const result = await merge(branch, deps.directory)
       if (result.ok) {
+        const tip = await runCommand(["git", "rev-parse", "--verify", `${branch}^{commit}`], { cwd: deps.directory })
+        if (!deps.preserveMember && tip.exitCode !== 0) throw new Error(`Merged branch identity unavailable for ${member.name}; ref retained`)
         await delBranch(branch, deps.directory)
-        deps.db.run("UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
+        deps.db.run("UPDATE team_member SET worktree_branch = NULL,merged_head=? WHERE team_id = ? AND name = ?", [tip.exitCode === 0 ? tip.stdout.trim() : null, teamInfo.teamId, member.name])
         merged.push(`${member.name} (${branch})`)
       } else {
         log(`cleanup:merge:conflict member=${member.name} branch=${branch} err=${result.error}`)
@@ -567,6 +578,9 @@ async function cleanupTeam(
     }
     if (member.worktree_dir) {
       try {
+        const execution = await memberExecution(deps, member.session_id)
+        if (execution !== "idle" && execution !== "missing") throw new Error(`Member ${member.name} reactivated; worktree removal blocked`)
+        if (!deps.preserveMember) await verifyMemberCheckout(deps.db, teamInfo.teamId, member.name, deps.directory)
         await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
       } catch (error) { throw new Error(`Worktree removal failed for ${member.name}: ${String(error)}`) }

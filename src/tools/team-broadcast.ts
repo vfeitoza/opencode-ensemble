@@ -2,6 +2,7 @@ import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { broadcastMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { log } from "../log"
+import { assertTeamAcceptsWork } from "../team-cleanup-state"
 
 /**
  * Execute the team_broadcast tool. Sends a message to all team members + lead (excluding sender).
@@ -12,6 +13,7 @@ export async function executeTeamBroadcast(
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  assertTeamAcceptsWork(deps.db, teamInfo.teamId)
 
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 

@@ -31,3 +31,13 @@ test("lifecycle operations cannot overlap across cleanup, merge or spawn", async
   await expect(withTeamOperation(db, ["team"], async () => "ok")).resolves.toBe("ok")
   db.close()
 })
+
+test("an admission from a terminated process does not permanently block lifecycle", async () => {
+  const db = setupDb()
+  const child = Bun.spawn(["bun", "-e", "process.exit(0)"], { stdout: "ignore", stderr: "ignore" })
+  await child.exited
+  db.run("INSERT INTO team_spawn_admission(id,team_id,owner_pid) VALUES('abandoned','team',?)", [child.pid])
+  await expect(withTeamOperation(db, ["team"], async () => "recovered")).resolves.toBe("recovered")
+  expect(db.query("SELECT id FROM team_spawn_admission").all()).toEqual([])
+  db.close()
+})

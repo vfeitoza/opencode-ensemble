@@ -6,6 +6,7 @@ import { preserveMemberHead } from "../src/member-preservation"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
 import { executeTeamShutdown } from "../src/tools/team-shutdown"
 import { executeTeamMerge } from "../src/tools/team-merge"
+import { executeTeamCleanup } from "../src/tools/team-cleanup"
 import { inspectWorktreeIdentity } from "../src/v2-worktree"
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -92,5 +93,37 @@ describe("final member HEAD preservation", () => {
     expect(await preserveMemberHead(deps.db, "team1", "worker", "/tmp/opencode")).toBeNull()
     deps.db.run("UPDATE team_member SET worktree_branch='missing-ref' WHERE team_id='team1'")
     await expect(preserveMemberHead(deps.db, "team1", "worker", "/tmp/opencode")).rejects.toThrow()
+  })
+
+  test("cleanup merges a new commit after an earlier merge cleared the member branch", async () => {
+    const root = await mkdtemp("/tmp/opencode/merge-then-commit-")
+    const deps = setupDeps()
+    delete deps.preserveMember
+    deps.directory = root
+    insertTeam(deps.db, "team1", "final-commit", "lead")
+    insertMember(deps.db, "team1", "worker", "ses-worker", "shutdown")
+    try {
+      await git(root, "init")
+      await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "base")
+      const directory = `${root}-worker`
+      await git(root, "worktree", "add", "-b", "ensemble-worker", directory)
+      try {
+        deps.db.run("UPDATE team_member SET worktree_dir=?,worktree_branch='ensemble-worker',worktree_identity=? WHERE team_id='team1'", [directory, JSON.stringify(await inspectWorktreeIdentity(directory))])
+        await Bun.write(path.join(directory, "first.txt"), "A")
+        await git(directory, "add", "first.txt")
+        await git(directory, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "A")
+        await preserveMemberHead(deps.db, "team1", "worker", root)
+        await executeTeamMerge(deps, { member: "worker" }, "lead")
+        await git(root, "add", "first.txt")
+        await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "integrate A")
+        expect(await preserveMemberHead(deps.db, "team1", "worker", root)).toBeNull()
+        await Bun.write(path.join(directory, "last.txt"), "B")
+        await git(directory, "add", "last.txt")
+        await git(directory, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "B")
+        const result = await executeTeamCleanup(deps, { force: false }, "lead")
+        expect(result).toContain("Safety-net merged")
+        expect(await Bun.file(path.join(root, "last.txt")).text()).toBe("B")
+      } finally { await rm(directory, { recursive: true, force: true }) }
+    } finally { deps.db.close(); await rm(root, { recursive: true, force: true }) }
   })
 })

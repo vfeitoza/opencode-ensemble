@@ -46,6 +46,12 @@ export async function withTeamOperation<T>(db: Database, teamIds: string[], acti
   const owner = randomUUID()
   withImmediateTransaction(db, () => {
     for (const teamId of ids) {
+      const admissions = db.query("SELECT id,owner_pid FROM team_spawn_admission WHERE team_id=?").all(teamId) as Array<{ id: string; owner_pid: number }>
+      for (const admission of admissions) {
+        let dead = false
+        try { process.kill(admission.owner_pid, 0) } catch (error) { dead = !!error && typeof error === "object" && "code" in error && error.code === "ESRCH" }
+        if (dead) db.run("DELETE FROM team_spawn_admission WHERE id=? AND owner_pid=?", [admission.id, admission.owner_pid])
+      }
       if (db.query("SELECT id FROM team_spawn_admission WHERE team_id=? LIMIT 1").get(teamId)) throw new Error("Team has pending spawn admissions; lifecycle operation blocked")
       const current = db.query("SELECT operation_id,owner_pid FROM team_operation_lock WHERE team_id=?").get(teamId) as { operation_id: string; owner_pid: number } | null
       if (current) {

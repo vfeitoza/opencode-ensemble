@@ -62,8 +62,22 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("shutdown events cannot bypass an unverified host interrupt capability", async () => {
+    const { ctx } = mockSetupCtx()
+    ctx.app = { version: "unverified" }
+    let interrupts = 0
+    ctx.session.interrupt = async () => { interrupts += 1 }
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("UPDATE team_member SET status='shutdown_requested' WHERE name='alice'")
+      await handle.dispatch({ type: "session.execution.started", data: { sessionID: "ses_alice" } })
+      expect(interrupts).toBe(0)
+    } finally { await handle.dispose(); handle.db.close() }
+  })
   test("interrupt failure keeps event stream alive", async () => {
     const { ctx } = mockSetupCtx()
+    ctx.app = { version: "2.0.26" }
     ctx.session.inbox = { list: async () => ({ data: [] }), cancel: async () => undefined }
     let start: () => void = () => undefined
     const ready = new Promise<void>(resolve => { start = resolve })

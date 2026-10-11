@@ -24,7 +24,7 @@ export async function preserveMemberHead(
   db: Database, teamId: string, memberName: string, cwd: string,
   options: { allowDirty?: boolean; preserve?: PreserveBranchFn } = {},
 ): Promise<string | null> {
-  const member = db.query("SELECT worktree_dir,worktree_branch,worktree_identity FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_dir: string | null; worktree_branch: string | null; worktree_identity: string | null } | null
+  const member = db.query("SELECT worktree_dir,worktree_branch,worktree_identity,merged_head FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_dir: string | null; worktree_branch: string | null; worktree_identity: string | null; merged_head: string | null } | null
   if (!member) throw new Error(`Member not found: ${memberName}`)
   if (!member.worktree_dir && !member.worktree_branch) return null
   const resource = getTeamResourceParts(db, teamId)
@@ -62,6 +62,7 @@ export async function preserveMemberHead(
     ? await git(checkout, ["rev-parse", "--verify", "HEAD^{commit}"])
     : member.worktree_branch ? await git(cwd, ["rev-parse", "--verify", `${member.worktree_branch}^{commit}`]) : null
   if (!source) throw new Error(`No owned commit for ${memberName}; abort/remove blocked`)
+  if (!member.worktree_branch && member.merged_head === source) return null
   const existing = await runCommand(["git", "show-ref", "--verify", "--hash", `refs/heads/${target}`], { cwd })
   const old = existing.exitCode === 0 ? existing.stdout.trim() : ""
   if (old && member.worktree_branch !== target) throw new Error(`Preserved ref collision for ${memberName}`)

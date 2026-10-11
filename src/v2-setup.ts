@@ -25,6 +25,7 @@ import { vlog } from "./log"
 import { preserveMemberHead } from "./member-preservation"
 import { createVerifiedInboxBridge } from "./v2-inbox"
 import { reconcileNotifications } from "./notifications"
+import { withTeamOperation } from "./team-cleanup-state"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -114,6 +115,7 @@ export async function setupEnsemble(
 
   /** Send the idle-without-report nudge once per member. */
   const nudgeMember = (teamId: string, memberName: string, sessionId: string): void => {
+    if (db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(teamId)) return
     const teamRow = db.query("SELECT status FROM team WHERE id = ?").get(teamId) as { status: string } | null
     if (!teamRow || teamRow.status !== "active") return
     const nudgeKey = `${teamId}:${memberName}`
@@ -175,7 +177,14 @@ export async function setupEnsemble(
     }
     const transition = dispatchV2Event(db, registry, tracker, event)
     if (transition?.to === "busy_while_shutdown" && sessionID) {
-      await ctx.session.interrupt({ sessionID, resume: false })
+      if (ctx.app?.version !== "2.0.26") {
+        vlog(`event:interrupt-blocked session=${sessionID} reason=unverified-host-capability`)
+        return
+      }
+      await withTeamOperation(db, [transition.teamId], async () => {
+        await preserveMemberHead(db, transition.teamId, transition.memberName, ctx.location.directory)
+        await ctx.session.interrupt({ sessionID, resume: false })
+      })
       return
     }
     // Idle-without-report nudge (parity with V1): a member that went idle

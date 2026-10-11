@@ -113,6 +113,7 @@ export class Watchdog {
     ).all() as Array<{ team_id: string; name: string; session_id: string }>
 
     for (const member of busy) {
+      if (this.db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(member.team_id)) continue
       if (this.progressTracker.isReported(member.session_id)) continue
 
       const tokenStalled = this.progressTracker.isTokenStalled(member.session_id, this.stallMinSteps, this.stallTokenThreshold)

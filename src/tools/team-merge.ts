@@ -6,6 +6,7 @@ import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-help
 import { log } from "../log"
 import { memberExecution } from "../member-stop"
 import { withTeamOperation } from "../team-cleanup-state"
+import { runCommand } from "../process"
 
 /**
  * Execute the team_merge tool. Merges a shutdown teammate's preserved
@@ -94,10 +95,12 @@ async function mergeMember(
   }
 
   // Merge succeeded — delete the preserved branch and clear DB
+  const tip = await runCommand(["git", "rev-parse", "--verify", `${branch}^{commit}`], { cwd: deps.directory })
+  if (!deps.preserveMember && tip.exitCode !== 0) throw new Error("Merged branch could not be identified; branch retained")
   await delBranch(branch, deps.directory)
   deps.db.run(
-    "UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?",
-    [teamInfo.teamId, args.member],
+    "UPDATE team_member SET worktree_branch = NULL,merged_head=? WHERE team_id = ? AND name = ?",
+    [tip.exitCode === 0 ? tip.stdout.trim() : null, teamInfo.teamId, args.member],
   )
 
   log(`merge:done member=${args.member} branch=${branch}`)
