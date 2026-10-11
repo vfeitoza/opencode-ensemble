@@ -1,5 +1,5 @@
 import type { PluginClient } from "./types"
-import { ensureWorktreeBranch } from "./v2-worktree"
+import { ensureWorktreeBranch, inspectWorktreeIdentity } from "./v2-worktree"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
@@ -206,7 +206,8 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const created = await ctx.worktree.create({ projectID: projectID(), name })
         try {
           const branch = await establishBranch(created.directory, name)
-          return { data: { name, branch, directory: created.directory } }
+          const identity = deps.ensureBranch ? undefined : await inspectWorktreeIdentity(created.directory)
+          return { data: { name, branch, directory: created.directory, identity } }
         } catch (error) {
           // OQ-202: retain the returned checkout for reconciliation rather than
           // deleting a directory/ref whose ownership or dirty state is unknown.

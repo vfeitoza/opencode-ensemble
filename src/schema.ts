@@ -229,6 +229,8 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX team_notification_scope_idx ON team_notification(team_id,state);
    CREATE TABLE team_notification_scope(team_id TEXT PRIMARY KEY,closed_at INTEGER NOT NULL);`,
+  `ALTER TABLE team_member ADD COLUMN worktree_identity TEXT;
+   ALTER TABLE team_spawn_resource ADD COLUMN worktree_identity TEXT;`,
 ]
 
 /**

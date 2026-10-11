@@ -2,6 +2,7 @@ import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import type { EnsembleConfig } from "./config"
 import type { ProgressTracker } from "./progress"
+import type { WorktreeIdentity } from "./v2-worktree"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -79,7 +80,7 @@ export interface PluginClient {
     selectSession(options: { sessionID?: string }): Promise<unknown>
   }
   worktree: {
-    create(options: { worktreeCreateInput?: { name?: string; startCommand?: string } }): Promise<{ data?: { name: string; branch: string; directory: string } }>
+    create(options: { worktreeCreateInput?: { name?: string; startCommand?: string } }): Promise<{ data?: { name: string; branch: string; directory: string; identity?: WorktreeIdentity } }>
     remove(options: { worktreeRemoveInput?: { directory: string } }): Promise<unknown>
     list(): Promise<{ data?: Array<{ name: string; branch: string; directory: string }> }>
     reset(options: { worktreeResetInput?: { directory: string } }): Promise<unknown>

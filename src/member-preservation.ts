@@ -3,13 +3,15 @@ import type { ToolDeps } from "./types"
 import { access } from "node:fs/promises"
 import { runCommand } from "./process"
 import { getTeamResourceParts, preservedBranchName, type PreserveBranchFn } from "./tools/merge-helper"
+import { verifyWorktreeIdentity, type WorktreeIdentity } from "./v2-worktree"
+import { realpath } from "node:fs/promises"
 
 /** Preserve a member's latest committed work before destructive lifecycle actions. */
 export async function preserveMemberHead(
   db: Database, teamId: string, memberName: string, cwd: string,
   options: { allowDirty?: boolean; preserve?: PreserveBranchFn } = {},
 ): Promise<string | null> {
-  const member = db.query("SELECT worktree_dir,worktree_branch FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_dir: string | null; worktree_branch: string | null } | null
+  const member = db.query("SELECT worktree_dir,worktree_branch,worktree_identity FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_dir: string | null; worktree_branch: string | null; worktree_identity: string | null } | null
   if (!member) throw new Error(`Member not found: ${memberName}`)
   if (!member.worktree_dir && !member.worktree_branch) return null
   const resource = getTeamResourceParts(db, teamId)
@@ -30,6 +32,16 @@ export async function preserveMemberHead(
     try { await access(member.worktree_dir); directoryExists = true } catch { /* a removed checkout may still have its owned ref */ }
   }
   const checkout = directoryExists ? member.worktree_dir : null
+  const identity = member.worktree_identity ? JSON.parse(member.worktree_identity) as WorktreeIdentity : null
+  if (checkout) {
+    if (!identity) throw new Error(`Worktree identity missing for legacy member ${memberName}; preservation/removal blocked`)
+    await verifyWorktreeIdentity(checkout, identity)
+    const leadCommon = await realpath(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+    if (leadCommon !== identity.commonDir) throw new Error("Preservation repository identity mismatch")
+  } else if (identity) {
+    const leadCommon = await realpath(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+    if (leadCommon !== identity.commonDir) throw new Error("Preservation repository identity mismatch")
+  }
   if (checkout && !options.allowDirty && await git(checkout, ["status", "--porcelain"])) {
     throw new Error(`Member ${memberName} has uncommitted work at ${member.worktree_dir}; abort/remove blocked`)
   }

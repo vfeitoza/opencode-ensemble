@@ -8,6 +8,7 @@ import { log } from "../log"
 import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
 import { preserveMemberWork } from "../member-preservation"
+import { inspectWorktreeIdentity, type WorktreeIdentity } from "../v2-worktree"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -92,6 +93,7 @@ export async function executeTeamSpawn(
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
+  let worktreeIdentity: WorktreeIdentity | undefined
   const spawnResourceId = generateId("spawn")
   if (useWorktree) deps.db.run(
     "INSERT INTO team_spawn_resource(id,team_id,member_name,state,time_created,time_updated) VALUES (?,?,?,'creating',?,?)",
@@ -104,11 +106,15 @@ export async function executeTeamSpawn(
     try {
       log(`spawn:worktree:start name=${args.name}`)
       const result = await withTimeout(
-        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }).then(result => {
+        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }).then(async result => {
           if (result.data) deps.db.run(
             "UPDATE team_spawn_resource SET worktree_dir=?,worktree_branch=?,state=CASE WHEN state='timed_out' THEN state ELSE 'worktree_ready' END,time_updated=? WHERE id=?",
             [result.data.directory, result.data.branch, Date.now(), spawnResourceId],
           )
+          if (result.data) {
+            worktreeIdentity = result.data.identity ?? (deps.preserveMember ? undefined : await inspectWorktreeIdentity(result.data.directory))
+            if (worktreeIdentity) deps.db.run("UPDATE team_spawn_resource SET worktree_identity=? WHERE id=?", [JSON.stringify(worktreeIdentity), spawnResourceId])
+          }
           return result
         }),
         getSpawnTimeout(), `worktree.create for "${args.name}"`
@@ -260,6 +266,7 @@ export async function executeTeamSpawn(
 
   // Register in memory
   deps.registry.register(teamInfo.teamId, args.name, childSessionId)
+  if (worktreeIdentity) deps.db.run("UPDATE team_member SET worktree_identity=? WHERE team_id=? AND name=?", [JSON.stringify(worktreeIdentity), teamInfo.teamId, args.name])
   if (useWorktree) deps.db.run("UPDATE team_spawn_resource SET state='registered',time_updated=? WHERE id=?", [Date.now(), spawnResourceId])
 
   // Auto-claim a task for this teammate when claim_task is provided (issue #27).
