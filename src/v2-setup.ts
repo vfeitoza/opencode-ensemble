@@ -381,7 +381,9 @@ export async function setupEnsemble(
     progressTracker,
   }
   await registerV2Tools(ctx.tool, deps)
-  void reconcileNotifications(client, db).catch(error => vlog(`init:notification-reconciliation:failed err=${String(error)}`))
+  void reconcileNotifications(client, db).then(result => {
+    result.failures.forEach(failure => vlog(`init:notification-reconciliation:failed team=${failure.teamId} kind=${failure.kind}`))
+  }).catch(error => vlog(`init:notification-reconciliation:failed err=${String(error)}`))
 
   // Dashboard mirrors V1: main instance only, skipped when port is 0.
   let dashboard: DashboardServer | null = null
