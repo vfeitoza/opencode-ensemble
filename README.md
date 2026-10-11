@@ -153,6 +153,28 @@ A real-time mission control dashboard runs at `http://localhost:4747` while Open
 - **Keyboard shortcuts** — `j/k` navigate agents, `Enter` opens drawer, `Esc` closes, `?` shows help
 - **Live clock** — current time + team session duration
 - **Project outline** — collapsible per-project grouping when teams span multiple working directories
+- **Remove project** — each project has a removal action with full-history counts,
+  an explicit scope warning and confirmation by typing the project name.
+
+Project removal deletes **Ensemble database history only**: the project, its
+teams, members, tasks, messages and safely terminal auxiliary records. It does
+not delete source files, directories, Git branches or OpenCode sessions. Active
+teams must finish `team_cleanup` first. Remaining worktrees/branches, unconfirmed
+worker execution, unfinished cleanup, late spawns or pending notifications block
+removal with an explanation. Safely merge/clean up/purge those resources first;
+there is no force-delete override in the dashboard.
+
+The action is available from the local dashboard (`localhost`/loopback), with
+same-origin write protection and a short-lived, one-use preview confirmation.
+Changes to the project invalidate the preview. If cancellation fails, history
+remains and you can close/reopen for a fresh preview. Projects without teams are
+also shown so their retained metadata can be removed.
+
+Deleting history frees SQLite pages for reuse; it does not automatically run
+[`VACUUM`](https://sqlite.org/lang_vacuum.html) or promise the file shrinks.
+New team-to-project history links retain ownership after team purge. Older
+orphaned records whose project was already lost before this migration are not
+guessed or assigned to unrelated projects; they remain for explicit recovery.
 
 Configure the port in `.opencode/ensemble.json`:
 

@@ -235,6 +235,16 @@ export const MIGRATIONS: string[] = [
   `CREATE TABLE team_operation_lock(team_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
   `CREATE TABLE team_spawn_admission(id TEXT PRIMARY KEY,team_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
   `ALTER TABLE team_member ADD COLUMN merged_head TEXT;`,
+  // OQ-210: keep ownership after team purge so project removal can find tombstones.
+  `CREATE TABLE team_project_history(team_id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE);
+   CREATE INDEX team_project_history_project_idx ON team_project_history(project_id);
+   INSERT INTO team_project_history(team_id,project_id) SELECT id,project_id FROM team;
+   CREATE TRIGGER team_project_history_insert AFTER INSERT ON team BEGIN
+     INSERT INTO team_project_history(team_id,project_id) VALUES(NEW.id,NEW.project_id);
+   END;
+   CREATE TRIGGER team_project_history_update AFTER UPDATE OF project_id ON team BEGIN
+     UPDATE team_project_history SET project_id=NEW.project_id WHERE team_id=NEW.id;
+   END;`,
 ]
 
 /**

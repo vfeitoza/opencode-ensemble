@@ -46,6 +46,8 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 #drawer.open{transform:translateX(0)}
 #drawer-bg{position:fixed;inset:0;background:rgba(12,14,20,.5);z-index:89;display:none}
 #drawer-bg.open{display:block}
+#project-removal{background:#141822;color:#e2e8f0;border:1px solid #3a4358;border-radius:10px;padding:24px;width:min(560px,calc(100vw - 24px));max-height:85vh;overflow-y:auto}
+#project-removal::backdrop{background:rgba(12,14,20,.85)}
 </style>
 </head>
 <body class="bg-base-950 text-txt-100 min-h-screen antialiased font-sans">
@@ -86,6 +88,19 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 </div>
 </div>
 </main>
+<div id="project-removal-status" role="status" tabindex="-1" class="text-[12px] text-txt-300 px-4 pb-12"></div>
+<dialog id="project-removal" aria-labelledby="project-removal-title" aria-describedby="project-removal-scope" oncancel="event.preventDefault();closeProjectRemoval()">
+<form onsubmit="confirmProjectRemoval(event)">
+<h2 id="project-removal-title" class="text-[16px] font-semibold mb-3">Remove project from Ensemble</h2>
+<p id="project-removal-name" class="font-mono text-[14px] break-all"></p>
+<p id="project-removal-path" class="font-mono text-[11px] text-txt-400 break-all mt-1"></p>
+<p id="project-removal-counts" class="text-[12px] text-txt-300 mt-4"></p>
+<p id="project-removal-scope" class="text-[12px] text-txt-300 mt-3">Permanently deletes this project's Ensemble history. Project files, directories, branches and OpenCode sessions are preserved. SQLite pages become reusable; the file may not shrink immediately.</p>
+<p id="project-removal-error" role="alert" class="text-[12px] text-amber-400 mt-3"></p>
+<label for="project-removal-input" class="block text-[12px] text-txt-300 mt-4">Type the exact project name to confirm</label>
+<input id="project-removal-input" autocomplete="off" disabled oninput="updateProjectRemovalConfirm()" class="mt-2 w-full border border-base-600 bg-base-950 rounded p-2 text-[13px]">
+<div class="flex justify-end gap-3 mt-5"><button id="project-removal-cancel" type="button" onclick="closeProjectRemoval()" class="px-3 py-2 rounded border border-base-600 text-[12px]">Cancel</button><button id="project-removal-confirm" type="submit" disabled class="px-3 py-2 rounded border border-red-500/50 text-red-300 text-[12px] disabled:opacity-40">Remove project</button></div>
+</form></dialog>
 <div id="tl" aria-label="Event timeline" class="fixed bottom-0 inset-x-0 h-10 bg-base-900/90 backdrop-blur border-t border-base-800 px-4 flex items-center z-40 overflow-x-auto scroll hidden"></div>
 <div id="sco" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="shortcuts-title" tabindex="-1" onclick="closeShortcuts()">
 <div class="bg-base-900 border border-base-800 rounded-lg p-6 max-w-sm" onclick="event.stopPropagation()">
