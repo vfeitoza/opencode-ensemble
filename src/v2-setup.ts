@@ -256,10 +256,14 @@ export async function setupEnsemble(
   void (async () => {
     try {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        await dispatch(event)
+        try {
+          await dispatch(event)
+        } catch (error) {
+          vlog(`event:handler-failed type=${event.type} session=${event.data?.sessionID ?? "unknown"} err=${error instanceof Error ? error.message : String(error)}`)
+        }
       }
-    } catch {
-      // Aborted on dispose or stream error — nothing to report.
+    } catch (error) {
+      if (!controller.signal.aborted) vlog(`event:subscription-failed err=${error instanceof Error ? error.message : String(error)}`)
     }
   })()
 
