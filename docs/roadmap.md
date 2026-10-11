@@ -73,6 +73,9 @@ Make many concurrent teams legible.
 - Group teams by project for triage.
 - Live status, idle/busy, blockers, and recent activity.
 - Keyboard-first navigation between teams, members, tasks, and messages.
+- Local dashboard project-history removal: preview counts, explicit typed-name
+  confirmation, and resource/recovery guards before deleting Ensemble records
+  (implemented; preserves project files and OpenCode sessions).
 
 ## Delivery Run Milestones
 

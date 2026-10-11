@@ -77,7 +77,8 @@ export function createProjectRemoval(db: Database, options: { client?: PluginCli
       confirmations.forEach((value, token) => { if (value.expires <= Date.now() || value.projectId === projectId) confirmations.delete(token) })
       const token = blockers.length ? null : randomUUID()
       if (token) {
-        if (confirmations.size >= 128) confirmations.delete(confirmations.keys().next().value!)
+        const oldest = confirmations.keys().next().value
+        if (confirmations.size >= 128 && oldest) confirmations.delete(oldest)
         confirmations.set(token, { projectId, fingerprint: s.fingerprint, expires: Date.now() + 120_000 })
       }
       return { project: { id: s.project.id, name: s.project.name, path: s.project.path }, counts: s.counts, blockers, token }

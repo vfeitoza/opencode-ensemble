@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { setupDeps, insertTeam } from "./helpers"
 import { startDashboard } from "../src/dashboard"
+import { request } from "node:http"
 
 async function fixture() {
   const deps = setupDeps()
@@ -51,5 +52,20 @@ test("projects with no teams remain visible and can be removed without a host cl
     expect(state.projects.some(p => p.id === "empty")).toBe(true)
     const preview = await (await f.request("/api/projects/removal-preview", { projectId: "empty" })).json() as { token: string }
     expect((await f.request("/api/projects/remove", { projectId: "empty", token: preview.token, name: "Empty" })).status).toBe(200)
+  } finally { f.server?.stop(true); f.deps.db.close() }
+})
+
+test("an oversized declared request is rejected before waiting for its body", async () => {
+  const f = await fixture()
+  try {
+    const token = f.html.match(/name="ensemble-write-token" content="([^"]+)"/)![1]!
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(f.base + "/api/projects/removal-preview", { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": "20000", "X-Ensemble-Token": token, Origin: f.base } }, res => { res.resume(); resolve(res.statusCode ?? 0); req.destroy() })
+      req.on("error", reject)
+      req.setTimeout(500, () => { resolve(0); req.destroy() })
+      req.flushHeaders()
+    })
+    expect(status).toBe(413)
+    expect(f.deps.db.query("SELECT id FROM team WHERE id='old'").get()).toBeTruthy()
   } finally { f.server?.stop(true); f.deps.db.close() }
 })

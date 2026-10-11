@@ -336,13 +336,19 @@ async function handleActivityRoute(
 
 async function handleProjectRemoval(req: IncomingMessage, res: ServerResponse, route: string, service: ReturnType<typeof createProjectRemoval>): Promise<void> {
   if (req.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new ProjectRemovalError(415, "Use application/json")
+  if (Number(req.headers["content-length"] ?? 0) > 16_384) throw new ProjectRemovalError(413, "Request too large")
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    size += buffer.length
-    if (size > 16_384) throw new ProjectRemovalError(413, "Request too large")
-    chunks.push(buffer)
+  try {
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.length
+      if (size > 16_384) throw new ProjectRemovalError(413, "Request too large")
+      chunks.push(buffer)
+    }
+  } catch (error) {
+    if (error instanceof ProjectRemovalError) throw error
+    throw new ProjectRemovalError(400, "Request body interrupted; no project history was deleted.")
   }
   let value: unknown
   try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")) } catch { throw new ProjectRemovalError(400, "Invalid JSON") }
@@ -374,7 +380,7 @@ function handleDashboardRequest(
       res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Project removal requires the local dashboard and a same-origin confirmation." })); return
     }
     void handleProjectRemoval(req, res, url.pathname, writes.service).catch(error => {
-      if (res.headersSent) return
+      if (res.headersSent || res.destroyed) return
       const status = error instanceof ProjectRemovalError ? error.status : 409
       res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" })
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Project removal failed; retained history is still available." }))
