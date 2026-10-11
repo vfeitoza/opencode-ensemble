@@ -232,6 +232,8 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_member ADD COLUMN worktree_identity TEXT;
    ALTER TABLE team_spawn_resource ADD COLUMN worktree_identity TEXT;`,
   `CREATE TABLE team_cleanup_state (team_id TEXT PRIMARY KEY,phase TEXT NOT NULL,operation_id TEXT,owner_pid INTEGER,revision INTEGER NOT NULL DEFAULT 0,last_error TEXT,time_updated INTEGER NOT NULL);`,
+  `CREATE TABLE team_operation_lock(team_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
+  `CREATE TABLE team_spawn_admission(id TEXT PRIMARY KEY,team_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
 ]
 
 /**

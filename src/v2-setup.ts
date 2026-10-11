@@ -28,6 +28,7 @@ import { reconcileNotifications } from "./notifications"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
+  app?: { version: string }
   location: { directory: string; project?: { id: string; directory: string; canonical: string } }
   options: Record<string, unknown>
   session: V2Context["session"] & {
@@ -365,6 +366,8 @@ export async function setupEnsemble(
     }
   }
   const client = createV2Client(ctx, {
+    // OQ-204: checked against the isolated real host; unknown versions fail closed.
+    nonDestructiveInterrupt: ctx.app?.version === "2.0.26",
     inbox: inboxBridge?.inbox,
     projectID: ctx.location.project?.id,
     projectDirectory: ctx.location.project?.canonical,
@@ -382,7 +385,7 @@ export async function setupEnsemble(
   }
   await registerV2Tools(ctx.tool, deps)
   void reconcileNotifications(client, db).then(result => {
-    result.failures.forEach(failure => vlog(`init:notification-reconciliation:failed team=${failure.teamId} kind=${failure.kind}`))
+    result.failures.forEach(failure => { vlog(`init:notification-reconciliation:failed team=${failure.teamId} kind=${failure.kind}`) })
   }).catch(error => vlog(`init:notification-reconciliation:failed err=${String(error)}`))
 
   // Dashboard mirrors V1: main instance only, skipped when port is 0.

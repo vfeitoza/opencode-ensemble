@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { setupDb } from "./helpers"
-import { beginCleanup, blockCleanup, advanceCleanup, finishCleanup, assertTeamAcceptsWork } from "../src/team-cleanup-state"
+import { beginCleanup, blockCleanup, advanceCleanup, finishCleanup, assertTeamAcceptsWork, withTeamOperation } from "../src/team-cleanup-state"
 
 test("cleanup CAS excludes concurrent operations and blocked phases are retryable", () => {
   const db = setupDb()
@@ -18,4 +18,16 @@ test("cleanup CAS excludes concurrent operations and blocked phases are retryabl
     finishCleanup(db, next)
     expect(() => assertTeamAcceptsWork(db, "team")).not.toThrow()
   } finally { db.close() }
+})
+
+test("lifecycle operations cannot overlap across cleanup, merge or spawn", async () => {
+  const db = setupDb()
+  let release: () => void = () => undefined
+  const barrier = new Promise<void>(resolve => { release = resolve })
+  const first = withTeamOperation(db, ["team"], () => barrier)
+  await expect(withTeamOperation(db, ["team"], async () => undefined)).rejects.toThrow("Another lifecycle")
+  release()
+  await first
+  await expect(withTeamOperation(db, ["team"], async () => "ok")).resolves.toBe("ok")
+  db.close()
 })

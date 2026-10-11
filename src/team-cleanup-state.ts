@@ -39,3 +39,36 @@ export function finishCleanup(db: Database, token: CleanupOperation): void {
 export function assertTeamAcceptsWork(db: Database, teamId: string): void {
   if (db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(teamId)) throw new Error("Team cleanup is pending; new work is blocked")
 }
+
+/** Serialize lifecycle tools across instances without holding a SQLite transaction over await. */
+export async function withTeamOperation<T>(db: Database, teamIds: string[], action: () => Promise<T>): Promise<T> {
+  const ids = [...new Set(teamIds)].sort()
+  const owner = randomUUID()
+  withImmediateTransaction(db, () => {
+    for (const teamId of ids) {
+      if (db.query("SELECT id FROM team_spawn_admission WHERE team_id=? LIMIT 1").get(teamId)) throw new Error("Team has pending spawn admissions; lifecycle operation blocked")
+      const current = db.query("SELECT operation_id,owner_pid FROM team_operation_lock WHERE team_id=?").get(teamId) as { operation_id: string; owner_pid: number } | null
+      if (current) {
+        let dead = false
+        try { process.kill(current.owner_pid, 0) } catch (error) { dead = !!error && typeof error === "object" && "code" in error && error.code === "ESRCH" }
+        if (!dead) throw new Error(`Another lifecycle operation owns team ${teamId}; retry when it finishes`)
+        db.run("DELETE FROM team_operation_lock WHERE team_id=? AND operation_id=?", [teamId, current.operation_id])
+      }
+      db.run("INSERT INTO team_operation_lock(team_id,operation_id,owner_pid) VALUES(?,?,?)", [teamId, owner, process.pid])
+    }
+  })
+  try { return await action() } finally {
+    ids.forEach(teamId => { db.run("DELETE FROM team_operation_lock WHERE team_id=? AND operation_id=?", [teamId, owner]) })
+  }
+}
+
+/** Concurrent spawns share admission; destructive operations require no admissions. */
+export async function withSpawnAdmission<T>(db: Database, teamId: string, action: () => Promise<T>): Promise<T> {
+  const id = randomUUID()
+  withImmediateTransaction(db, () => {
+    assertTeamAcceptsWork(db, teamId)
+    if (db.query("SELECT team_id FROM team_operation_lock WHERE team_id=?").get(teamId)) throw new Error("Team lifecycle operation in progress; spawn blocked")
+    db.run("INSERT INTO team_spawn_admission(id,team_id,owner_pid) VALUES(?,?,?)", [id, teamId, process.pid])
+  })
+  try { return await action() } finally { db.run("DELETE FROM team_spawn_admission WHERE id=?", [id]) }
+}

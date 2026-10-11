@@ -4,12 +4,14 @@ import type { IsDirtyFn, CommitCountFn } from "./shared"
 import { mergeBranch, deleteBranch, getOverlappingFiles } from "./merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
+import { memberExecution } from "../member-stop"
+import { withTeamOperation } from "../team-cleanup-state"
 
 /**
  * Execute the team_merge tool. Merges a shutdown teammate's preserved
  * branch into the working directory as unstaged changes.
  */
-export async function executeTeamMerge(
+async function mergeMember(
   deps: ToolDeps,
   args: { member: string },
   sessionId: string,
@@ -21,13 +23,15 @@ export async function executeTeamMerge(
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT status, worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; worktree_dir: string | null } | null
+  const member = deps.db.query("SELECT status,session_id, worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { status: string; session_id: string; worktree_branch: string | null; worktree_dir: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
   if (member.status !== "shutdown" && member.status !== "error") {
     throw new Error(`Teammate "${args.member}" is still active (status: ${member.status}). Shut them down first with team_shutdown.`)
   }
+  const execution = await memberExecution(deps, member.session_id)
+  if (execution !== "idle" && execution !== "missing") throw new Error(`Member ${args.member} is not confirmed stopped; merge blocked`)
 
   if (!member.worktree_branch) {
     throw new Error(`No branch to merge for "${args.member}". They may not have a worktree, or their work was already merged.`)
@@ -98,4 +102,10 @@ export async function executeTeamMerge(
 
   log(`merge:done member=${args.member} branch=${branch}`)
   return `Merged ${args.member}'s changes into your working directory (unstaged). Review with: git diff`
+}
+
+/** Serialize merge against concurrent destructive operations for the same team. */
+export async function executeTeamMerge(...parameters: Parameters<typeof mergeMember>): Promise<string> {
+  const [deps, , sessionId] = parameters
+  return withTeamOperation(deps.db, [requireLead(deps, sessionId).teamId], () => mergeMember(...parameters))
 }

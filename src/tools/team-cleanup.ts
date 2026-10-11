@@ -6,10 +6,10 @@ import { mergeBranch, deleteBranch, getOverlappingFiles, teamResourceSegment } f
 import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 import { runCommand } from "../process"
-import { preserveMemberWork } from "../member-preservation"
+import { preserveMemberWork, verifyMemberCheckout } from "../member-preservation"
 import { closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications } from "../notifications"
 import { stopAndPreserveMember, memberExecution } from "../member-stop"
-import { beginCleanup, advanceCleanup, blockCleanup, finishCleanup } from "../team-cleanup-state"
+import { beginCleanup, advanceCleanup, blockCleanup, finishCleanup, withTeamOperation } from "../team-cleanup-state"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (namespace: string, cwd: string) => Promise<string[]>
@@ -410,7 +410,7 @@ function buildPurgeConfirmationInstructions(preview: string, confirmToken: strin
  * Acts as a safety net: merges any remaining unmerged preserved branches
  * that the lead forgot to merge with team_merge.
  */
-export async function executeTeamCleanup(
+async function cleanupTeam(
   deps: ToolDeps,
   args: { force: boolean; acknowledge_uncommitted?: boolean; purge?: string[]; confirm_purge?: boolean; confirm_token?: string },
   sessionId: string,
@@ -558,6 +558,7 @@ export async function executeTeamCleanup(
   for (const member of members) {
     const execution = await memberExecution(deps, member.session_id)
     if (execution !== "idle" && execution !== "missing") throw new Error(`Member ${member.name} is not confirmed stopped; resource removal blocked`)
+    if (!deps.preserveMember) await verifyMemberCheckout(deps.db, teamInfo.teamId, member.name, deps.directory)
     if (member.workspace_id) {
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
@@ -597,4 +598,11 @@ export async function executeTeamCleanup(
     blockCleanup(deps.db, operation, error)
     throw error
   }
+}
+
+/** Serialize cleanup/purge against concurrent lifecycle tools before touching resources. */
+export async function executeTeamCleanup(...parameters: Parameters<typeof cleanupTeam>): Promise<string> {
+  const [deps, args, sessionId] = parameters
+  const targets = args.purge?.length ? resolvePurgeTargets(deps, args.purge).map(team => team.id) : [requireLead(deps, sessionId).teamId]
+  return withTeamOperation(deps.db, targets, () => cleanupTeam(...parameters))
 }

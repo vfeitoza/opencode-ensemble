@@ -6,6 +6,19 @@ import { getTeamResourceParts, preservedBranchName, type PreserveBranchFn } from
 import { verifyWorktreeIdentity, type WorktreeIdentity } from "./v2-worktree"
 import { realpath } from "node:fs/promises"
 
+/** Validate an owned checkout immediately before removal, even after its branch was merged. */
+export async function verifyMemberCheckout(db: Database, teamId: string, memberName: string, cwd: string): Promise<void> {
+  const member = db.query("SELECT worktree_dir,worktree_identity FROM team_member WHERE team_id=? AND name=?").get(teamId, memberName) as { worktree_dir: string | null; worktree_identity: string | null } | null
+  if (!member?.worktree_dir) return
+  if (!member.worktree_identity) throw new Error(`Worktree identity missing for ${memberName}; removal blocked`)
+  const identity = JSON.parse(member.worktree_identity) as WorktreeIdentity
+  await verifyWorktreeIdentity(member.worktree_dir, identity)
+  const common = await runCommand(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd })
+  if (common.exitCode !== 0 || await realpath(common.stdout.trim()) !== identity.commonDir) throw new Error("Removal repository identity mismatch")
+  const dirty = await runCommand(["git", "status", "--porcelain"], { cwd: member.worktree_dir })
+  if (dirty.exitCode !== 0 || dirty.stdout.trim()) throw new Error(`Uncommitted or unreadable worktree for ${memberName}; removal blocked`)
+}
+
 /** Preserve a member's latest committed work before destructive lifecycle actions. */
 export async function preserveMemberHead(
   db: Database, teamId: string, memberName: string, cwd: string,

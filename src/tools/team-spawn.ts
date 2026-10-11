@@ -9,7 +9,7 @@ import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
 import { preserveMemberWork } from "../member-preservation"
 import { inspectWorktreeIdentity, type WorktreeIdentity } from "../v2-worktree"
-import { assertTeamAcceptsWork } from "../team-cleanup-state"
+import { assertTeamAcceptsWork, withSpawnAdmission } from "../team-cleanup-state"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -59,7 +59,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  * Pass worktree: false for read-only agents that don't need isolation.
  * Pass plan_approval: true to require the teammate to send a plan before writing.
  */
-export async function executeTeamSpawn(
+async function spawnMember(
   deps: ToolDeps,
   args: { name: string; agent?: string | null; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
   sessionId: string,
@@ -473,4 +473,10 @@ export async function executeTeamSpawn(
   spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
   return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${isolationInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+}
+
+/** Serialize admission so cleanup cannot archive a team while a child is being created. */
+export async function executeTeamSpawn(...parameters: Parameters<typeof spawnMember>): Promise<string> {
+  const [deps, , sessionId] = parameters
+  return withSpawnAdmission(deps.db, requireLead(deps, sessionId).teamId, () => spawnMember(...parameters))
 }

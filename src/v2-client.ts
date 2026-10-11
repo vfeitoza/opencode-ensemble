@@ -35,6 +35,8 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps {
+  /** Enable forced stop only after this host's interrupt was characterized as non-destructive. */
+  nonDestructiveInterrupt?: boolean
   inbox?: NonNullable<PluginClient["session"]["inbox"]>
   /** Host project ID, distinct from the directory-keyed Ensemble project row. */
   projectID?: string
@@ -93,7 +95,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
   }
   return {
     session: {
-      nonDestructiveInterrupt: true,
+      nonDestructiveInterrupt: deps.nonDestructiveInterrupt === true,
       execution: async ({ sessionID }) => {
         try {
           await ctx.session.get({ sessionID })
