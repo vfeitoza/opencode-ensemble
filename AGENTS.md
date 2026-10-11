@@ -191,6 +191,16 @@ abort or worktree removal. Failed preservation or uncommitted work blocks these
 operations even when `force` is requested. Late spawn resources retain ownership
 in `team_spawn_resource` for reconciliation rather than being silently deleted.
 
+Lifecycle hardening additionally requires persisted checkout identity before
+preservation/removal. Never substitute a reused path's ancestor HEAD. Confirm
+host execution idle/missing before cleanup; shutdown_requested/error DB labels
+are not execution proof. Cleanup failures keep the team active and its registry
+available, with a durable retry phase. Delivery admissions and lifecycle locks
+must prevent Ensemble prompts from reactivating a member during removal.
+Typed SessionNotFound is distinct from transport failure; only the former can
+terminalize a missing-session inbox. A failed event handler must not end the
+whole event subscription.
+
 ### Call sites (audit these if you change shutdown/cleanup)
 
 1. `team-shutdown.ts` → `preserveAndAbort()` — idle/force shutdown

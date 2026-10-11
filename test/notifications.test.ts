@@ -3,6 +3,31 @@ import { setupDeps, insertTeam } from "./helpers"
 import { queueTeamWake, closeTeamNotifications, cancelTeamNotifications, countAmbiguousNotifications, reconcileNotifications } from "../src/notifications"
 
 describe("owned team notifications", () => {
+  test("removed lead session does not block legacy preview counting", async () => {
+    const deps = setupDeps()
+    insertTeam(deps.db, "t1", "team", "gone-session")
+    deps.client.session.inbox = { list: async () => { throw { _tag: "SessionNotFoundError", sessionID: "gone-session" } }, cancel: async () => undefined }
+    expect(await countAmbiguousNotifications(deps.client, deps.db, "t1")).toBe(0)
+  })
+
+  test("a failing scope does not prevent cancellation for a second team", async () => {
+    const deps = setupDeps()
+    const ids: Record<string, string> = {}
+    for (const id of ["a", "b"]) {
+      insertTeam(deps.db, id, id, `lead-${id}`)
+      queueTeamWake(deps.client, deps.db, { teamId: id, messageId: id, sessionId: `lead-${id}`, text: "wake" })
+      closeTeamNotifications(deps.db, id)
+      ids[id] = (deps.db.query("SELECT id FROM team_notification WHERE team_id=?").get(id) as { id: string }).id
+    }
+    await Promise.resolve()
+    const cancelled: string[] = []
+    deps.client.session.inbox = {
+      list: async ({ sessionID }) => { if (sessionID === "lead-a") throw new Error("transport unavailable"); return { data: [{ id: ids.b!, type: "synthetic" }] } },
+      cancel: async ({ inboxID }) => { cancelled.push(inboxID) },
+    }
+    try { await reconcileNotifications(deps.client, deps.db) } catch { /* baseline throws before trying b */ }
+    expect(cancelled).toContain(ids.b!)
+  })
   test("reload reconciliation rechecks a previously absent ID that the host admits late", async () => {
     const deps = setupDeps()
     insertTeam(deps.db, "team1", "team", "lead")

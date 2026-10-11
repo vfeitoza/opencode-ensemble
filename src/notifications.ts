@@ -2,6 +2,7 @@ import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import { randomUUID } from "node:crypto"
 import { log } from "./log"
+import { isMissingSession, normalizeInboxResult, InboxAccessError } from "./inbox-errors"
 
 /** Persist an owned notification before fire-and-forget admission. */
 export function queueTeamWake(client: PluginClient, db: Database, input: { teamId: string; messageId: string; sessionId: string; text: string }): void {
@@ -46,7 +47,12 @@ export async function cancelTeamNotifications(client: PluginClient, db: Database
   if (!client.session.inbox) throw new Error(`Inbox cancellation unavailable for team ${teamId}; purge blocked`)
   let cancelled = 0
   for (const sessionID of new Set(records.map(record => record.session_id))) {
-    const items = (await client.session.inbox.list({ sessionID })).data ?? []
+    let items: ReturnType<typeof normalizeInboxResult>["data"]
+    try { items = normalizeInboxResult(await client.session.inbox.list({ sessionID })).data } catch (error) {
+      if (!isMissingSession(error)) throw error
+      db.run("UPDATE team_notification SET state='cancelled',time_updated=? WHERE team_id=? AND session_id=?", [Date.now(), teamId, sessionID])
+      continue
+    }
     for (const item of items) {
       const owned = item.metadata?.ensemble as { teamId?: string; notificationId?: string; messageId?: string } | undefined
       if (item.type === "synthetic" && owned?.teamId === teamId && owned.notificationId === item.id && !records.some(record => record.id === item.id)) {
@@ -59,7 +65,11 @@ export async function cancelTeamNotifications(client: PluginClient, db: Database
       if (item) {
         if (item.type !== "synthetic") throw new Error(`Notification ownership conflict for ${record.id}; refusing to cancel user input`)
         try { await client.session.inbox.cancel({ sessionID, inboxID: record.id }) } catch (error) {
-          const current = (await client.session.inbox.list({ sessionID })).data ?? []
+          let current: ReturnType<typeof normalizeInboxResult>["data"]
+          try { current = normalizeInboxResult(await client.session.inbox.list({ sessionID })).data } catch (listError) {
+            if (!isMissingSession(listError)) throw listError
+            current = []
+          }
           if (current.some(entry => entry.id === record.id)) throw error
         }
       }
@@ -78,14 +88,25 @@ export async function countAmbiguousNotifications(client: PluginClient, db: Data
   const members = db.query("SELECT session_id FROM team_member WHERE team_id=?").all(teamId) as Array<{ session_id: string }>
   let ambiguous = 0
   for (const sessionID of new Set([team.lead_session_id, ...members.map(member => member.session_id)])) {
-    const items = (await client.session.inbox.list({ sessionID })).data ?? []
+    let items: ReturnType<typeof normalizeInboxResult>["data"]
+    try { items = normalizeInboxResult(await client.session.inbox.list({ sessionID })).data } catch (error) {
+      if (isMissingSession(error)) continue
+      throw error
+    }
     ambiguous += items.filter(item => item.type === "synthetic" && item.payload?.text?.startsWith("[System: New team message from ") && !db.query("SELECT id FROM team_notification WHERE id=? AND team_id=?").get(item.id, teamId)).length
   }
   return ambiguous
 }
 
 /** Retry durable cancellation records on reload, without issuing new reminders. */
-export async function reconcileNotifications(client: PluginClient, db: Database): Promise<void> {
+export async function reconcileNotifications(client: PluginClient, db: Database): Promise<{ processed: number; failures: Array<{ teamId: string; kind: string }> }> {
   const scopes = db.query("SELECT team_id FROM team_notification_scope").all() as Array<{ team_id: string }>
-  for (const scope of scopes) await cancelTeamNotifications(client, db, scope.team_id)
+  const failures: Array<{ teamId: string; kind: string }> = []
+  let processed = 0
+  for (const scope of scopes) {
+    try { await cancelTeamNotifications(client, db, scope.team_id); processed += 1 } catch (error) {
+      failures.push({ teamId: scope.team_id, kind: error instanceof InboxAccessError ? error.kind : "transport" })
+    }
+  }
+  return { processed, failures }
 }

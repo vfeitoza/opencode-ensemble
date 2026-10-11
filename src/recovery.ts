@@ -206,6 +206,7 @@ export async function recoverUndeliveredMessages(
   let redelivered = 0
 
   for (const team of teams) {
+    if (db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(team.id)) continue
     const messages = getUndeliveredMessages(db, team.id)
 
     for (const msg of messages) {

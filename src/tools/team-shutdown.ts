@@ -6,6 +6,8 @@ import type { PreserveBranchFn } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
 import { preserveMemberHead } from "../member-preservation"
+import { memberExecution } from "../member-stop"
+import { withTeamOperation } from "../team-cleanup-state"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
@@ -13,7 +15,7 @@ import { preserveMemberHead } from "../member-preservation"
  * Before aborting, preserves the worktree branch to a safe ref so
  * session.abort() cannot destroy the agent's committed work.
  */
-export async function executeTeamShutdown(
+async function shutdownMember(
   deps: ToolDeps,
   args: { member: string; force?: boolean },
   sessionId: string,
@@ -81,6 +83,12 @@ export async function executeTeamShutdown(
   return `Shutdown requested for ${args.member}. They will finish current work and shut down. Call team_shutdown with force: true to abort immediately.`
 }
 
+/** Serialize shutdown against cleanup and merge for the same team. */
+export async function executeTeamShutdown(...parameters: Parameters<typeof shutdownMember>): Promise<string> {
+  const [deps, , sessionId] = parameters
+  return withTeamOperation(deps.db, [requireLead(deps, sessionId).teamId], () => shutdownMember(...parameters))
+}
+
 /**
  * Preserve the worktree branch, then abort the session and mark shutdown.
  * The branch is copied to ensemble/preserved/{team_id}/{name} BEFORE abort,
@@ -100,11 +108,16 @@ async function preserveAndAbort(
   })
 
   // Now safe to abort — the branch is preserved
+  const before = await memberExecution(deps, sessionId)
+  if (before === "unknown" || (before === "running" && !deps.client.session.nonDestructiveInterrupt)) throw new Error(`Cannot safely confirm shutdown of ${memberName}; resources retained`)
   try {
     await deps.client.session.abort({ sessionID: sessionId })
-  } catch {
-    // Abort failed — session may already be gone
+  } catch (error) {
+    if (await memberExecution(deps, sessionId) !== "missing") throw error
   }
+  const after = await memberExecution(deps, sessionId)
+  if (after !== "idle" && after !== "missing") throw new Error(`Member ${memberName} has not stopped; resources retained`)
+  await preserveMemberHead(deps.db, teamId, memberName, deps.directory, { ...(preserve !== preserveBranch ? { preserve } : {}) })
 
   deps.db.run(
     "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamShutdown } from "../../src/tools/team-shutdown"
 import { executeTeamCleanup } from "../../src/tools/team-cleanup"
+import { executeTeamBroadcast } from "../../src/tools/team-broadcast"
 import type { MergeBranchFn, DeleteBranchFn } from "../../src/tools/merge-helper"
 
 /** Noop merge fn for tests that don't need real git. */
@@ -169,6 +170,7 @@ describe("team_shutdown", () => {
       return { data: { "sess-alice": { type: "idle" } } }
     }
     deps.client.session.abort = async () => { throw new Error("session gone") }
+    deps.client.session.execution = async () => "missing"
 
     const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", undefined, noopPreserve)
     // Should still transition to shutdown since member was idle
@@ -190,6 +192,9 @@ describe("team_shutdown", () => {
   })
 
   test("busy member with force=true aborts immediately, no promptAsync", async () => {
+    let running = true
+    deps.client.session.execution = async () => running ? "running" : "idle"
+    deps.client.session.abort = async options => { deps.client.calls.push({ method: "session.abort", args: [options] }); running = false }
     deps.client.session.status = async () => {
       deps.client.calls.push({ method: "session.status", args: [] })
       return { data: { "sess-alice": { type: "busy" } } }
@@ -274,6 +279,60 @@ describe("team_shutdown", () => {
 })
 
 describe("team_cleanup", () => {
+  test("purge refuses a legacy checkout lacking captured identity before removal", async () => {
+    const d = setupDeps()
+    delete d.preserveMember
+    insertTeam(d.db, "purge-identity", "legacy", "lead-legacy", "archived")
+    insertMember(d.db, "purge-identity", "worker", "session-legacy", "shutdown")
+    d.db.run("UPDATE team_member SET worktree_dir='/unverified-checkout' WHERE team_id='purge-identity'")
+    d.client.worktree.list = async () => ({ data: [{ name: "ensemble-legacy", branch: "", directory: "/unverified-checkout" }] })
+    const token = await preparePurgeConfirmation(d, ["legacy"])
+    await expect(executeTeamCleanup(d, { force: false, purge: ["legacy"], confirm_purge: true, confirm_token: token }, "main-sess", async () => false, noopMerge, noopDelete, false, undefined, undefined, noopListBranches)).rejects.toThrow("identity missing")
+    expect(d.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    expect(d.db.query("SELECT id FROM team WHERE id='purge-identity'").get()).toBeTruthy()
+  })
+  test("broadcast cannot reactivate a stopped worker during workspace removal", async () => {
+    const d = setupDeps()
+    insertTeam(d.db, "race", "race", "lead-race")
+    insertMember(d.db, "race", "worker", "session-race", "shutdown")
+    d.registry.register("race", "worker", "session-race")
+    d.db.run("UPDATE team_member SET workspace_id='ws',worktree_dir='/owned' WHERE team_id='race'")
+    let running = false
+    d.client.session.execution = async () => running ? "running" : "idle"
+    d.client.session.promptAsync = async () => { running = true }
+    d.client.workspace.remove = async () => {
+      try { await executeTeamBroadcast(d, { text: "start again" }, "lead-race") } catch { /* expected admission refusal */ }
+    }
+    let removedWhileRunning = false
+    d.client.worktree.remove = async () => { removedWhileRunning = running }
+    await executeTeamCleanup(d, { force: false }, "lead-race", async () => false, noopMerge, noopDelete, false)
+    expect(removedWhileRunning).toBe(false)
+  })
+  test("inbox failure keeps team controllable instead of archiving and unregistering", async () => {
+    const isolated = setupDeps()
+    insertTeam(isolated.db, "retry-team", "retry-team", "retry-lead")
+    insertMember(isolated.db, "retry-team", "worker", "retry-worker", "busy", "running")
+    isolated.registry.register("retry-team", "worker", "retry-worker")
+    isolated.db.run("INSERT INTO team_notification(id,team_id,message_id,session_id,state,time_created,time_updated) VALUES('msg_owned','retry-team','message','retry-lead','admitted',0,0)")
+    isolated.client.session.inbox = { list: async () => { throw new Error("HTTP 500") }, cancel: async () => undefined }
+    await expect(executeTeamCleanup(isolated, { force: true }, "retry-lead", undefined, noopMerge, noopDelete, false)).rejects.toThrow("HTTP 500")
+    expect(isolated.db.query("SELECT status FROM team WHERE id='retry-team'").get()).toMatchObject({ status: "active" })
+    expect(isolated.registry.getBySession("retry-worker")).toBeDefined()
+    expect(isolated.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    isolated.client.session.inbox = { list: async () => ({ data: [] }), cancel: async () => undefined }
+    expect(await executeTeamCleanup(isolated, { force: true }, "retry-lead", undefined, noopMerge, noopDelete, false)).toContain("cleaned up")
+  })
+  test("shutdown_requested worker cannot be removed before confirmed idle", async () => {
+    const isolated = setupDeps()
+    insertTeam(isolated.db, "stop-team", "stop-team", "stop-lead")
+    insertMember(isolated.db, "stop-team", "worker", "stop-worker", "shutdown_requested")
+    isolated.registry.register("stop-team", "worker", "stop-worker")
+    isolated.client.session.status = async () => ({ data: { "stop-worker": { type: "busy" } } })
+    isolated.db.run("UPDATE team_member SET worktree_dir='/owned-worker' WHERE team_id='stop-team'")
+    await expect(executeTeamCleanup(isolated, { force: false }, "stop-lead", async () => false, noopMerge, noopDelete, false)).rejects.toThrow()
+    expect(isolated.client.calls.some(call => call.method === "worktree.remove")).toBe(false)
+    expect(isolated.db.query("SELECT status FROM team WHERE id='stop-team'").get()).toMatchObject({ status: "active" })
+  })
   let deps: ReturnType<typeof setupDeps>
 
   beforeEach(() => {
@@ -309,6 +368,10 @@ describe("team_cleanup", () => {
     deps.registry.register("t1", "alice", "sess-alice")
     deps.registry.register("t1", "bob", "sess-bob")
 
+    let aliceRunning = true
+    deps.client.session.execution = async ({ sessionID }) => sessionID === "sess-alice" && aliceRunning ? "running" : "idle"
+    deps.client.session.abort = async options => { deps.client.calls.push({ method: "session.abort", args: [options] }); aliceRunning = false; return {} }
+
     const result = await executeTeamCleanup(deps, { force: true }, "lead-sess", undefined, noopMerge, noopDelete, false)
     expect(result).toContain("cleaned up")
 
@@ -340,15 +403,14 @@ describe("team_cleanup", () => {
     expect(team.status).toBe("archived")
   })
 
-  test("treats shutdown_requested members as inactive (cleanup succeeds without force)", async () => {
+  test("shutdown_requested is not accepted as a completed shutdown without force", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown_requested", "idle")
     deps.registry.register("t1", "alice", "sess-alice")
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("still active")
 
     const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
-    expect(team.status).toBe("archived")
+    expect(team.status).toBe("active")
   })
 
   test("treats error members as inactive (cleanup succeeds without force)", async () => {
@@ -377,7 +439,7 @@ describe("team_cleanup", () => {
     expect(removeCalls).toHaveLength(1)
   })
 
-  test("cleanup continues if worktree removal fails", async () => {
+  test("cleanup remains retryable if worktree removal fails", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice"])
@@ -385,8 +447,8 @@ describe("team_cleanup", () => {
 
     deps.client.worktree.remove = async () => { throw new Error("worktree gone") }
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("Worktree removal failed")
+    expect(deps.db.query("SELECT status FROM team WHERE id='t1'").get()).toMatchObject({ status: "active" })
   })
 
   test("cleanup with no worktrees does not mention branches", async () => {
@@ -434,7 +496,7 @@ describe("team_cleanup", () => {
     expect(row.workspace_id).toBeNull()
   })
 
-  test("cleanup continues if workspace.remove fails", async () => {
+  test("cleanup remains retryable if workspace.remove fails", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
@@ -442,8 +504,8 @@ describe("team_cleanup", () => {
 
     deps.client.workspace.remove = async () => { throw new Error("workspace gone") }
 
-    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("Workspace removal failed")
+    expect(deps.registry.getBySession("sess-alice")).toBeDefined()
   })
 
   test("cleanup lists multiple branches when multiple members have worktrees", async () => {

@@ -5,6 +5,7 @@ import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { parseModelId, getMemberModel } from "../member-model"
 import { log } from "../log"
 import { queueTeamWake } from "../notifications"
+import { assertTeamAcceptsWork, deliverMemberPrompt } from "../team-cleanup-state"
 
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
@@ -21,6 +22,7 @@ export async function executeTeamMessage(
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  if (args.to !== "lead") assertTeamAcceptsWork(deps.db, teamInfo.teamId)
 
   if (args.force && teamInfo.role !== "lead") {
     throw new Error("Only the lead can force-deliver a message to a completed teammate.")
@@ -140,14 +142,12 @@ export async function executeTeamMessage(
   // Deliver on the recipient's configured model, if any (#26).
   const deliveryText = `[Team message from ${senderName}]: ${messageText}`
   const recipientModel = getMemberModel(deps.db, teamInfo.teamId, args.to)
-  deps.client.session.promptAsync({
+  deliverMemberPrompt(deps.db, deps.client, teamInfo.teamId, {
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
     ...(recipientModel ? { model: recipientModel } : {}),
-  }).then(() => {
+  }, () => {
     markDelivered(deps.db, msgId)
-  }).catch((err) => {
-    log(`team_message:deliver:failed to=${args.to} err=${err instanceof Error ? err.message : String(err)}`)
   })
 
   return `Message sent to ${args.to}.`

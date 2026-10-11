@@ -1,5 +1,5 @@
 import type { PluginClient } from "./types"
-import { ensureWorktreeBranch } from "./v2-worktree"
+import { ensureWorktreeBranch, inspectWorktreeIdentity } from "./v2-worktree"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
@@ -14,6 +14,7 @@ export interface V2Context {
     move?(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
     active(): Promise<Record<string, { type: string }>>
+    wait?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
     synthetic(input: Record<string, unknown>): Promise<unknown>
   }
   worktree: {
@@ -34,6 +35,8 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps {
+  /** Enable forced stop only after this host's interrupt was characterized as non-destructive. */
+  nonDestructiveInterrupt?: boolean
   inbox?: NonNullable<PluginClient["session"]["inbox"]>
   /** Host project ID, distinct from the directory-keyed Ensemble project row. */
   projectID?: string
@@ -85,6 +88,9 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   column stays the source of truth and is still nulled by cleanup.
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
+  // The installed Promise adapter ignores wait's request-options argument.
+  // Share one waiter per session instead of accumulating abandoned waits.
+  const idleWaits = new Map<string, Promise<"idle">>()
   const establishBranch = deps.ensureBranch ?? ensureWorktreeBranch
   const projectID = (): string => {
     if (!deps.projectID) throw new Error("V2 worktree operations require the host projectID")
@@ -92,6 +98,31 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
   }
   return {
     session: {
+      nonDestructiveInterrupt: deps.nonDestructiveInterrupt === true,
+      execution: async ({ sessionID }) => {
+        try {
+          await ctx.session.get({ sessionID })
+          if (typeof ctx.session.active === "function") {
+            const active = await ctx.session.active()
+            return active[sessionID] ? "running" : "idle"
+          }
+          if (!ctx.session.wait) return "unknown"
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            let waiter = idleWaits.get(sessionID)
+            if (!waiter) {
+              waiter = ctx.session.wait({ sessionID }).then(() => "idle" as const).finally(() => { idleWaits.delete(sessionID) })
+              idleWaits.set(sessionID, waiter)
+            }
+            return await Promise.race([
+              waiter,
+              new Promise<"unknown">(resolve => { timer = setTimeout(() => resolve("unknown"), 1500) }),
+            ])
+          } finally { if (timer) clearTimeout(timer) }
+        } catch (error) {
+          return error && typeof error === "object" && "_tag" in error && error._tag === "SessionNotFoundError" ? "missing" : "unknown"
+        }
+      },
       ...((ctx.session.inbox ?? deps.inbox) ? { inbox: ctx.session.inbox ?? deps.inbox } : {}),
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
@@ -206,7 +237,8 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const created = await ctx.worktree.create({ projectID: projectID(), name })
         try {
           const branch = await establishBranch(created.directory, name)
-          return { data: { name, branch, directory: created.directory } }
+          const identity = deps.ensureBranch ? undefined : await inspectWorktreeIdentity(created.directory)
+          return { data: { name, branch, directory: created.directory, identity } }
         } catch (error) {
           // OQ-202: retain the returned checkout for reconciliation rather than
           // deleting a directory/ref whose ownership or dirty state is unknown.

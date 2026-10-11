@@ -225,7 +225,7 @@ const plugin: Plugin = async (input) => {
             // Nudge teammate if they went idle without reporting to the lead (once only)
             // Skip if they already reported completion (issue #3 — prevents re-waking completed teammates)
             const nudgeKey = `${transition.teamId}:${transition.memberName}`
-            if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
+            if (!db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(transition.teamId) && !nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
               const nudgeModel = getMemberModel(db, transition.teamId, transition.memberName)
@@ -302,7 +302,7 @@ const plugin: Plugin = async (input) => {
              JOIN team t ON tm.team_id = t.id
              WHERE tm.session_id = ? AND t.status = 'active'`
           ).get(sessionID) as { team_id: string; name: string } | null
-          if (member && !hasReportedCompletion(db, member.team_id, member.name)) {
+          if (member && !db.query("SELECT team_id FROM team_cleanup_state WHERE team_id=?").get(member.team_id) && !hasReportedCompletion(db, member.team_id, member.name)) {
             const staleThreshold = Date.now() - 5000
             const peerMsgs = db.query(
               "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = ? AND delivered = 0 AND time_created < ?"

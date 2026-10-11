@@ -62,6 +62,47 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("shutdown events cannot bypass an unverified host interrupt capability", async () => {
+    const { ctx } = mockSetupCtx()
+    ctx.app = { version: "unverified" }
+    let interrupts = 0
+    ctx.session.interrupt = async () => { interrupts += 1 }
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("UPDATE team_member SET status='shutdown_requested' WHERE name='alice'")
+      await handle.dispatch({ type: "session.execution.started", data: { sessionID: "ses_alice" } })
+      expect(interrupts).toBe(0)
+    } finally { await handle.dispose(); handle.db.close() }
+  })
+  test("interrupt failure keeps event stream alive", async () => {
+    const { ctx } = mockSetupCtx()
+    ctx.app = { version: "2.0.26" }
+    ctx.session.inbox = { list: async () => ({ data: [] }), cancel: async () => undefined }
+    let start: () => void = () => undefined
+    const ready = new Promise<void>(resolve => { start = resolve })
+    let end: () => void = () => undefined
+    const ended = new Promise<void>(resolve => { end = resolve })
+    ctx.session.interrupt = async () => { throw new Error("temporary interrupt failure") }
+    ctx.event.subscribe = () => (async function* () {
+      await ready
+      try {
+        yield { type: "session.execution.started", data: { sessionID: "ses_alice" } }
+        yield { type: "session.idle", data: { sessionID: "ses_bob" } }
+      } finally { end() }
+    })()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("UPDATE team_member SET status='shutdown_requested' WHERE name='alice'")
+      handle.db.run("INSERT INTO team_member(team_id,name,session_id,agent,status,execution_status,time_created,time_updated) VALUES('team1','bob','ses_bob','build','busy','running',0,0)")
+      handle.registry.register("team1", "bob", "ses_bob")
+      start()
+      await ended
+      expect(handle.db.query("SELECT status FROM team_member WHERE name='bob'").get()).toMatchObject({ status: "ready" })
+      expect(handle.db.query("SELECT status FROM team_member WHERE name='alice'").get()).toMatchObject({ status: "shutdown_requested" })
+    } finally { await handle.dispose(); handle.db.close() }
+  })
   test("preservation failure during shutdown does not terminate dispatch or mark shutdown safe", async () => {
     const { ctx } = mockSetupCtx()
     const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })

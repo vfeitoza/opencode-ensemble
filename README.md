@@ -249,6 +249,20 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
+Cleanup is recoverable: failure leaves the team active with a visible blocked
+phase, preserving lead control and retry information. New worker admissions and
+broadcasts are blocked during cleanup, and concurrent lifecycle operations are
+serialized. `shutdown_requested` and `error` do not prove the host stopped a
+worker; resource removal requires confirmed idle/missing execution. Missing or
+unverifiable capabilities block removal instead of guessing.
+
+New worktrees store Git checkout identity. A replaced path, different linked
+checkout, or legacy row without captured identity cannot authorize automatic
+removal. Typed missing-session inbox errors are terminal; transport errors and
+malformed inbox responses remain retryable blockers without stopping unrelated
+teams' notification reconciliation. The inbox bridge pins its authenticated
+endpoint across identity verification and each operation.
+
 Task batches validate dependencies and insert under one immediate SQLite writer
 transaction. Dependencies must already exist in the current team before the
 call. A failed insert or writer-lock failure does not leave half of a batch;

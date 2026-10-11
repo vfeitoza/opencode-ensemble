@@ -1,10 +1,39 @@
-import { realpath } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { runCommand } from "./process"
 
 async function git(directory: string, args: string[]): Promise<string> {
   const result = await runCommand(["git", ...args], { cwd: directory })
   if (result.exitCode !== 0) throw new Error(`Worktree Git operation failed: ${result.stderr.trim() || args[0]}`)
   return result.stdout.trim()
+}
+
+/** Captured identity of a linked Git checkout; paths alone do not prove ownership. */
+export interface WorktreeIdentity {
+  root: string
+  gitDir: string
+  commonDir: string
+  branch: string
+  initialHead: string
+  gitDirIdentity: string
+}
+
+/** Read and validate a linked checkout identity before assigning it to a worker. */
+export async function inspectWorktreeIdentity(directory: string): Promise<WorktreeIdentity> {
+  const root = await realpath(await git(directory, ["rev-parse", "--show-toplevel"]))
+  if (root !== await realpath(directory)) throw new Error("Worktree identity mismatch: path is not checkout root")
+  const gitDir = await realpath(await git(directory, ["rev-parse", "--absolute-git-dir"]))
+  const commonDir = await realpath(await git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+  if (gitDir === commonDir || await git(directory, ["rev-parse", "--show-superproject-working-tree"])) throw new Error("Worktree identity mismatch: not a linked checkout")
+  const identity = await stat(gitDir, { bigint: true })
+  const inventory = await git(directory, ["worktree", "list", "--porcelain"])
+  if (!inventory.split("\n").includes(`worktree ${root}`)) throw new Error("Checkout absent from Git worktree inventory")
+  return { root, gitDir, commonDir, branch: await git(directory, ["symbolic-ref", "--short", "HEAD"]), initialHead: await git(directory, ["rev-parse", "HEAD"]), gitDirIdentity: `${identity.dev}:${identity.ino}:${identity.birthtimeNs}` }
+}
+
+/** Reject path reuse, another repository, symlink redirection, or a changed checkout. */
+export async function verifyWorktreeIdentity(directory: string, expected: WorktreeIdentity): Promise<void> {
+  const actual = await inspectWorktreeIdentity(directory)
+  if (actual.root !== expected.root || actual.gitDir !== expected.gitDir || actual.commonDir !== expected.commonDir || actual.branch !== expected.branch || actual.gitDirIdentity !== expected.gitDirIdentity) throw new Error("Worktree identity mismatch; preservation/removal blocked")
 }
 
 /** Establish a verified branch in a newly created V2 worktree, without overwriting refs. */

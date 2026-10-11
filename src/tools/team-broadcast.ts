@@ -1,7 +1,7 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { broadcastMessage, markDelivered, hasReportedCompletion } from "../messaging"
-import { log } from "../log"
+import { assertTeamAcceptsWork, deliverMemberPrompt } from "../team-cleanup-state"
 
 /**
  * Execute the team_broadcast tool. Sends a message to all team members + lead (excluding sender).
@@ -12,6 +12,7 @@ export async function executeTeamBroadcast(
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  assertTeamAcceptsWork(deps.db, teamInfo.teamId)
 
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
@@ -48,14 +49,12 @@ export async function executeTeamBroadcast(
       skipped++
       continue
     }
-    deps.client.session.promptAsync({
+    deliverMemberPrompt(deps.db, deps.client, teamInfo.teamId, {
       sessionID: recipient.sessionId,
       parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
-    }).then(() => {
+    }, () => {
       delivered++
       if (delivered === 1) markDelivered(deps.db, msgId)
-    }).catch((err) => {
-      log(`team_broadcast:deliver:failed to=${recipient.name} err=${err instanceof Error ? err.message : String(err)}`)
     })
   }
 

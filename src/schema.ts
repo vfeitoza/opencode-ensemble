@@ -229,6 +229,12 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX team_notification_scope_idx ON team_notification(team_id,state);
    CREATE TABLE team_notification_scope(team_id TEXT PRIMARY KEY,closed_at INTEGER NOT NULL);`,
+  `ALTER TABLE team_member ADD COLUMN worktree_identity TEXT;
+   ALTER TABLE team_spawn_resource ADD COLUMN worktree_identity TEXT;`,
+  `CREATE TABLE team_cleanup_state (team_id TEXT PRIMARY KEY,phase TEXT NOT NULL,operation_id TEXT,owner_pid INTEGER,revision INTEGER NOT NULL DEFAULT 0,last_error TEXT,time_updated INTEGER NOT NULL);`,
+  `CREATE TABLE team_operation_lock(team_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
+  `CREATE TABLE team_spawn_admission(id TEXT PRIMARY KEY,team_id TEXT NOT NULL,owner_pid INTEGER NOT NULL);`,
+  `ALTER TABLE team_member ADD COLUMN merged_head TEXT;`,
 ]
 
 /**
