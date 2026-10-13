@@ -36,6 +36,7 @@ logs
 .opencode/
 .superpowers/
 .worktrees/
+.serena/
 dogfood-output/
 docs/superpowers/
 

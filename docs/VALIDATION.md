@@ -1,5 +1,16 @@
 # Local-directory loading validation
 
+## Latest review and verification
+
+See `docs/reviews/2026-10-10-fable-5-1-review.md` for the completed independent
+Fable review and evidence reconciliation, and
+`docs/reviews/2026-10-10-v2-runtime-verification.md` for the real host checks.
+Those later reports resolve some pending checks below: small-board TUI rendering
+passed, read-only permission evaluations passed on OpenCode 2.0.26, and worktree
+contract mismatch/detached branches and residual inbox notifications were
+confirmed. Earlier "pending" statements are historical snapshots, not the
+latest review status. Full V2 compatibility is still not established.
+
 ## Scope
 
 This verifies discovery and activation of the local Ensemble checkout, not full
